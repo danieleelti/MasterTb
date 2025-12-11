@@ -325,7 +325,7 @@ with st.sidebar:
                             'new_value': extracted.get(desc_col_name, ""),
                             'old_value': current_data.get(desc_col_name, "")
                         }
-                        # IMPORTANTISSIMO: Forza la selezione del format trovato per mostrarlo nel main
+                        # Forza la selezione del format trovato
                         st.session_state['force_selection'] = existing_id
                         st.session_state['draft_data'] = {}
                     else:
@@ -348,7 +348,7 @@ with st.sidebar:
                 res = search_ai(q, df)
                 st.session_state['search_results'] = [x for x in res if x in product_ids] if res else []
 
-    # RISULTATI RICERCA IN SIDEBAR (Cards)
+    # RISULTATI RICERCA
     if st.session_state['search_results']:
         st.success(f"Trovati: {len(st.session_state['search_results'])}")
         
@@ -382,16 +382,14 @@ with st.sidebar:
     st.subheader("3. 📝 Selezione")
     all_options = [""] + sorted(product_ids)
     
-    # Determina indice (Priorità: Force Selection > Session State > 0)
     idx_sel = 0
     if st.session_state['force_selection']:
         if st.session_state['force_selection'] in all_options:
             idx_sel = all_options.index(st.session_state['force_selection'])
-        st.session_state['force_selection'] = None # Consuma la selezione forzata
+        st.session_state['force_selection'] = None
     
     selected_id = st.selectbox("Scegli Format:", all_options, index=idx_sel, label_visibility="collapsed")
     
-    # Modalità Creazione vs Modifica
     is_new_mode = False
     if st.session_state['draft_data'] and not st.session_state['pending_duplicate']:
         is_new_mode = True
@@ -409,7 +407,7 @@ with st.sidebar:
 
 st.title("🦁 MasterTb Manager")
 
-# 1. BOX GESTIONE DUPLICATI (Aggiornamento Rapido)
+# 1. BOX GESTIONE DUPLICATI
 if st.session_state['pending_duplicate']:
     dup_data = st.session_state['pending_duplicate']
     dup_id = dup_data['id']
@@ -443,24 +441,18 @@ if st.session_state['pending_duplicate']:
                     c_idx = cols.index(target_col) + 2
                     ws.update_cell(r_idx, c_idx, edited_new_desc)
                     st.toast("Aggiornato!", icon="✅")
-                    
-                    # RESET STATI MA NON LAST_PROCESSED_FILE (Per evitare loop analisi)
                     st.session_state['pending_duplicate'] = None
-                    # Lasciamo st.session_state['last_processed_file'] com'è
-                    
                     load_data.clear()
                     st.rerun()
                 except Exception as e: st.error(f"Errore: {e}")
         with b2:
             if st.button("❌ IGNORA", use_container_width=True):
                 st.session_state['pending_duplicate'] = None
-                # Se ignora, non resettiamo il file, così non riparte l'analisi
                 st.rerun()
     st.divider()
 
 
 # 2. LOGICA VISIBILITÀ FORM
-# Mostra il form se siamo in New Mode OPPURE se c'è un ID selezionato (che ora viene forzato se c'è un duplicato)
 show_form = False
 if is_new_mode:
     show_form = True
@@ -500,7 +492,12 @@ with st.form("master_form"):
         c_lower = c.lower()
         if "[[RIEMPIMENTO MANUALE]]" in val: val = ""
         
-        # --- LOGICA CAMPI SPECIFICI (Regole Business) ---
+        # --- REGOLA NOVITÀ PER NUOVI FORMAT ---
+        # Se è nuovo, la novità è SI per definizione.
+        if is_new_mode and ("novità" in c_lower or "novita" in c_lower):
+            val = "SI"
+        
+        # --- LOGICA WIDGET ---
         
         # 1. METODO DI CALCOLO
         if "metodo" in c_lower and "calcolo" in c_lower:
@@ -525,26 +522,20 @@ with st.form("master_form"):
             
         # 4. LINK AUTOMATICI (Solo nuovi format)
         elif "link" in c_lower:
-            # Calcolo lo slug per il nome
             slug = create_slug(new_id)
             
             # Website
             if "website" in c_lower:
-                if not val or is_new_mode: val = f"https://teambuilding.it/project/{slug}/"
+                if is_new_mode or not val: val = f"https://www.teambuilding.it/project/{slug}/"
             
-            # Schede ITA
-            elif "scheda" in c_lower and "ita" in c_lower:
-                if "pdf" in c_lower and (not val or is_new_mode):
-                    val = f"https://teambuilding.it/preventivi/schede/ita/{slug}.pdf"
-                elif ("ppt" in c_lower or "pptx" in c_lower) and (not val or is_new_mode):
-                    val = f"https://teambuilding.it/preventivi/schede/ita/{slug}.pptx"
-            
-            # Schede ENG
-            elif "scheda" in c_lower and "eng" in c_lower:
-                if "pdf" in c_lower and (not val or is_new_mode):
-                    val = f"https://teambuilding.it/preventivi/schede/eng/{slug}.pdf"
-                elif ("ppt" in c_lower or "pptx" in c_lower) and (not val or is_new_mode):
-                    val = f"https://teambuilding.it/preventivi/schede/eng/{slug}.pptx"
+            # Schede
+            elif "scheda" in c_lower:
+                base_url = "https://teambuilding.it/preventivi/schede"
+                lang = "eng" if "eng" in c_lower else "ita"
+                ext = "pptx" if ("ppt" in c_lower) else "pdf"
+                
+                if is_new_mode or not val:
+                    val = f"{base_url}/{lang}/{slug}.{ext}"
             
             form_values[c] = st.text_input(f"**{c}**", value=val)
             
