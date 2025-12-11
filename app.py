@@ -200,11 +200,13 @@ def analyze_document_with_gemini(text_content, columns):
     if "GOOGLE_API_KEY" not in st.secrets: return {}
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 
+    # Identifica colonne chiave
     desc_col_name = "Descrizione Breve"
+    log_col_name = "Logistica"
+    
     for c in columns:
-        if "descrizione" in c.lower():
-            desc_col_name = c
-            break
+        if "descrizione" in c.lower(): desc_col_name = c
+        if "logistica" in c.lower(): log_col_name = c
 
     # Prompt SPECIFICO per Esperto Team Building
     sys_prompt = f"""
@@ -215,6 +217,7 @@ def analyze_document_with_gemini(text_content, columns):
     
     1. Campo Chiave: '{columns[0]}' (NOME FORMAT).
     2. Campo '{desc_col_name}': SCRIVI 5-6 RIGHE COMPLETE coinvolgenti e descrittive.
+    3. Campo '{log_col_name}': Estrai dettagli tecnici, spazi (indoor/outdoor), necessità (tavoli, corrente, acqua). Sii preciso.
     
     REGOLE DI RAGIONAMENTO (THINKING PROCESS):
     - 'Target Ideale': NON copiare solo il testo. Ragiona: a chi si rivolge? Sales? Management? Tutti? Scrivi una sintesi mirata.
@@ -314,16 +317,23 @@ with st.sidebar:
                         st.toast(f"Trovato: {existing_id}", icon="🔄")
                         
                         current_data = df.loc[existing_id].to_dict()
-                        desc_col_name = "Descrizione Breve"
-                        for c in cols:
-                            if "descrizione" in c.lower():
-                                desc_col_name = c; break
+                        
+                        # Trova nomi colonne
+                        desc_col_name = next((c for c in cols if "descrizione" in c.lower()), "Descrizione Breve")
+                        log_col_name = next((c for c in cols if "logistica" in c.lower()), "Logistica")
                         
                         st.session_state['pending_duplicate'] = {
                             'id': existing_id,
-                            'target_col': desc_col_name,
-                            'new_value': extracted.get(desc_col_name, ""),
-                            'old_value': current_data.get(desc_col_name, "")
+                            'desc': {
+                                'col': desc_col_name,
+                                'new': extracted.get(desc_col_name, ""),
+                                'old': current_data.get(desc_col_name, "")
+                            },
+                            'log': {
+                                'col': log_col_name,
+                                'new': extracted.get(log_col_name, ""),
+                                'old': current_data.get(log_col_name, "")
+                            }
                         }
                         # Forza la selezione del format trovato
                         st.session_state['force_selection'] = existing_id
@@ -411,35 +421,60 @@ st.title("🦁 MasterTb Manager")
 if st.session_state['pending_duplicate']:
     dup_data = st.session_state['pending_duplicate']
     dup_id = dup_data['id']
-    target_col = dup_data.get('target_col', "Descrizione Breve")
-    new_val_ai = dup_data.get('new_value', "")
-    old_val = dup_data.get('old_value', "")
+    
+    # Recupera dati desc
+    d_col = dup_data['desc']['col']
+    d_new = dup_data['desc']['new']
+    d_old = dup_data['desc']['old']
+
+    # Recupera dati log
+    l_col = dup_data['log']['col']
+    l_new = dup_data['log']['new']
+    l_old = dup_data['log']['old']
 
     with st.container():
         st.warning(f"⚠️ **RILEVATO FORMAT ESISTENTE: '{dup_id}'**")
-        st.markdown(f"L'AI propone di aggiornare solo la descrizione. Puoi modificarla qui sotto prima di salvare.")
+        st.markdown(f"L'AI propone di aggiornare **Descrizione** e **Logistica**. Modifica se necessario.")
         
-        c1, c2 = st.columns(2)
-        with c1:
-            st.caption("🔴 Descrizione Attuale")
-            st.info(old_val if old_val else "(Vuoto)", icon="ℹ️")
-        with c2:
-            st.caption("🟢 Nuova Descrizione (Modificabile)")
-            edited_new_desc = st.text_area(
-                "Modifica Nuova Descrizione", 
-                value=new_val_ai, 
-                height=200, 
-                key="edit_dup_desc",
-                label_visibility="collapsed"
-            )
+        # COLONNA 1: DESCRIZIONE
+        st.subheader(f"1. {d_col}")
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            st.caption("🔴 Attuale")
+            st.info(d_old if d_old else "(Vuoto)", icon="ℹ️")
+        with col_d2:
+            st.caption("🟢 Nuova (Editabile)")
+            edited_desc = st.text_area("Modifica Nuova Descrizione", value=d_new, height=150, key="edit_d", label_visibility="collapsed")
+        
+        st.markdown("---")
 
+        # COLONNA 2: LOGISTICA
+        st.subheader(f"2. {l_col}")
+        col_l1, col_l2 = st.columns(2)
+        with col_l1:
+            st.caption("🔴 Attuale")
+            st.info(l_old if l_old else "(Vuoto)", icon="ℹ️")
+        with col_l2:
+            st.caption("🟢 Nuova (Editabile)")
+            edited_log = st.text_area("Modifica Nuova Logistica", value=l_new, height=150, key="edit_l", label_visibility="collapsed")
+
+        st.markdown("---")
+
+        # AZIONI
         b1, b2 = st.columns([1, 4])
         with b1:
-            if st.button("🔄 AGGIORNA", type="primary", use_container_width=True):
+            if st.button("🔄 AGGIORNA ENTRAMBI", type="primary", use_container_width=True):
                 try:
                     r_idx = product_ids.index(dup_id) + 2 
-                    c_idx = cols.index(target_col) + 2
-                    ws.update_cell(r_idx, c_idx, edited_new_desc)
+                    
+                    # Update Descrizione
+                    c_idx_d = cols.index(d_col) + 2
+                    ws.update_cell(r_idx, c_idx_d, edited_desc)
+                    
+                    # Update Logistica
+                    c_idx_l = cols.index(l_col) + 2
+                    ws.update_cell(r_idx, c_idx_l, edited_log)
+
                     st.toast("Aggiornato!", icon="✅")
                     st.session_state['pending_duplicate'] = None
                     load_data.clear()
@@ -497,7 +532,7 @@ with st.form("master_form"):
         if is_new_mode and ("novità" in c_lower or "novita" in c_lower):
             val = "SI"
         
-        # --- LOGICA WIDGET ---
+        # --- LOGICA WIDGET E LABELS ---
         
         # 1. METODO DI CALCOLO
         if "metodo" in c_lower and "calcolo" in c_lower:
@@ -520,24 +555,31 @@ with st.form("master_form"):
             except: curr_rank = "3"
             form_values[c] = st.selectbox(f"**{c}**", options_ranking, index=options_ranking.index(curr_rank))
             
-        # 4. LINK AUTOMATICI (Solo nuovi format)
+        # 4. LINK AUTOMATICI E OBBLIGATORI
         elif "link" in c_lower:
+            label = f"**{c}**"
+            is_pdf_ppt = "pdf" in c_lower or "ppt" in c_lower
+            
+            # Se è un link PDF/PPT, aggiungi etichetta OBBLIGATORIO in rosso
+            if is_pdf_ppt:
+                label += " :red[(OBBLIGATORIO)]"
+            
             slug = create_slug(new_id)
             
             # Website
             if "website" in c_lower:
                 if is_new_mode or not val: val = f"https://www.teambuilding.it/project/{slug}/"
             
-            # Schede
-            elif "scheda" in c_lower:
+            # FILE PDF/PPT
+            elif is_pdf_ppt:
                 base_url = "https://teambuilding.it/preventivi/schede"
                 lang = "eng" if "eng" in c_lower else "ita"
-                ext = "pptx" if ("ppt" in c_lower) else "pdf"
+                ext = "pptx" if "ppt" in c_lower else "pdf"
                 
                 if is_new_mode or not val:
                     val = f"{base_url}/{lang}/{slug}.{ext}"
             
-            form_values[c] = st.text_input(f"**{c}**", value=val)
+            form_values[c] = st.text_input(label, value=val)
             
         # 5. DURATA e ALTRI
         elif "durata" in c_lower and "ideale" in c_lower:
@@ -553,15 +595,27 @@ with st.form("master_form"):
     submitted = st.form_submit_button(submit_label, type="primary")
 
     if submitted:
-        changes = {}
-        if is_new_mode:
-            changes = {'_NEW_': True, 'id': new_id, 'data': form_values}
+        # --- VALIDAZIONE BLOCCANTE LINK TASSATIVI ---
+        errors = []
+        for c, val in form_values.items():
+            c_lower = c.lower()
+            if "link" in c_lower and ("pdf" in c_lower or "ppt" in c_lower):
+                if not val.strip():
+                    errors.append(f"Il campo '{c}' è TASSATIVO e non può essere vuoto!")
+        
+        if errors:
+            for e in errors: st.error(e)
         else:
-            for k, v in form_values.items():
-                original = str(source_data.get(k, ""))
-                if v != original:
-                    changes[k] = {'old': original, 'new': v}
-        st.session_state['pending_changes'] = changes
+            # Se la validazione passa, procedi al calcolo modifiche
+            changes = {}
+            if is_new_mode:
+                changes = {'_NEW_': True, 'id': new_id, 'data': form_values}
+            else:
+                for k, v in form_values.items():
+                    original = str(source_data.get(k, ""))
+                    if v != original:
+                        changes[k] = {'old': original, 'new': v}
+            st.session_state['pending_changes'] = changes
 
 # 4. CONFERMA (DIFF VIEW)
 if st.session_state['pending_changes']:
