@@ -11,7 +11,7 @@ from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import pypdf
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
-import difflib # LIBRERIA PER LA RICERCA "SIMILE" (FUZZY)
+import difflib
 
 # --- CONFIGURAZIONE ---
 SEARCH_MODEL = "models/gemini-2.5-flash-lite"
@@ -65,11 +65,13 @@ if 'search_results' not in st.session_state:
 if 'pending_duplicate' not in st.session_state:
     st.session_state['pending_duplicate'] = None
 
+# Inizializzazione sicura draft_data
 if 'draft_data' not in st.session_state:
     st.session_state['draft_data'] = {}
 elif st.session_state['draft_data'] is None:
     st.session_state['draft_data'] = {}
 
+# Variabili Debug
 if 'debug_raw_text' not in st.session_state: st.session_state['debug_raw_text'] = ""
 if 'debug_ai_response' not in st.session_state: st.session_state['debug_ai_response'] = ""
 
@@ -155,15 +157,13 @@ def analyze_document_with_gemini(text_content, columns):
     if "GOOGLE_API_KEY" not in st.secrets: return {}
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 
-    # TROVA IL NOME DELLA COLONNA DESCRIZIONE (per il prompt specifico)
-    # Cerchiamo colonne che contengono "descrizione" o "description"
-    desc_col_name = "Descrizione Breve" # Default fallback
+    # Identifica colonna descrizione per prompt specifico
+    desc_col_name = "Descrizione Breve"
     for c in columns:
         if "descrizione" in c.lower():
             desc_col_name = c
             break
 
-    # Prompt POTENZIATO
     sys_prompt = f"""
     Sei un esperto copywriter e data entry. Analizza il testo fornito.
     
@@ -171,7 +171,7 @@ def analyze_document_with_gemini(text_content, columns):
     {json.dumps(columns)}
     
     1. Campo Chiave: '{columns[0]}' (NOME FORMAT).
-    2. Campo '{desc_col_name}': DEVI SCRIVERE ALMENO 5 RIGHE COMPLETE. Elabora un testo ricco, accattivante e dettagliato basato sul documento. Non essere sintetico qui.
+    2. Campo '{desc_col_name}': DEVI SCRIVERE ALMENO 5 RIGHE COMPLETE. Elabora un testo ricco, accattivante e dettagliato basato sul documento.
     
     REGOLE GENERALI:
     - Se trovi l'informazione, scrivila.
@@ -181,7 +181,7 @@ def analyze_document_with_gemini(text_content, columns):
 
     model = genai.GenerativeModel(
         model_name=DOC_MODEL,
-        generation_config={"temperature": 0.2, "response_mime_type": "application/json"}, # Temp leggermente alzata per creatività nella descrizione
+        generation_config={"temperature": 0.2, "response_mime_type": "application/json"},
         system_instruction=sys_prompt
     )
 
@@ -308,54 +308,56 @@ with tab2:
                 if len(raw_text) > 10:
                     extracted = analyze_document_with_gemini(raw_text, [id_col] + cols)
                     
-                    # --- CONTROLLO DUPLICATI INTELLIGENTE (FUZZY) ---
-                    extracted_name = str(extracted.get(id_col, "")).strip()
+                    # --- SANITIZATION ANTI-CRASH (IL FIX CRITICO) ---
+                    if extracted is None:
+                        extracted = {}
+                    elif isinstance(extracted, list):
+                        # Se Gemini restituisce una lista, prendiamo il primo elemento
+                        extracted = extracted[0] if len(extracted) > 0 else {}
                     
-                    # 1. Cerca match esatto o molto simile (0.85 = 85% di somiglianza)
+                    if not isinstance(extracted, dict):
+                        extracted = {} # Fallback finale
+                    # -----------------------------------------------
+
+                    # --- FUZZY MATCH LOGIC ---
+                    extracted_name = str(extracted.get(id_col, "")).strip()
                     matches = difflib.get_close_matches(extracted_name, product_ids, n=1, cutoff=0.85)
                     
                     if matches:
                         existing_id = matches[0]
                         st.toast(f"⚠️ Trovato format simile: {existing_id}", icon="🔄")
-                        # Forza l'uso dell'ID esistente per attivare la logica "Aggiorna"
-                        extracted[id_col] = existing_id
-                        
-                        # Attiva subito lo stato di duplicato
+                        extracted[id_col] = existing_id 
                         st.session_state['pending_duplicate'] = {
                             'id': existing_id,
                             'values': extracted
                         }
                     else:
-                        # Nessun duplicato trovato, resetta stati
                         st.session_state['pending_duplicate'] = None
 
-                    # Salva bozza
-                    st.session_state['draft_data'] = extracted if extracted else {}
+                    st.session_state['draft_data'] = extracted
                     
                     if st.session_state['draft_data']:
-                        st.success("Dati estratti!")
+                        st.success("Dati estratti! Verifica i campi sotto.")
                     else:
                         st.error("L'AI non ha estratto dati validi.")
                 else:
-                    st.error("Testo insufficiente.")
+                    st.error("Testo insufficiente nel file.")
 
-    # --- DEBUG SECTION ---
+    # DEBUG
     if st.session_state.get('debug_raw_text'):
         with st.expander("🕵️‍♂️ DEBUG: Vedi cosa ha letto il sistema"):
-            st.markdown("**Testo Letto dal File (Primi 2000 caratteri):**")
             st.text(st.session_state['debug_raw_text'][:2000])
             st.divider()
-            st.markdown("**Risposta JSON dall'AI:**")
             st.code(st.session_state.get('debug_ai_response', 'Nessuna risposta'))
 
     st.divider()
     st.markdown("### 2. Dettagli Format")
     
-    # BOX DI SCELTA (Appare se Fuzzy Match ha trovato qualcosa)
+    # BOX DI SCELTA
     if st.session_state['pending_duplicate']:
         dup_data = st.session_state['pending_duplicate']
         dup_id = dup_data['id']
-        st.warning(f"⚠️ **ATTENZIONE:** Sembra che **'{dup_id}'** esista già nel database!")
+        st.warning(f"⚠️ **ATTENZIONE:** Il format **'{dup_id}'** esiste già (o è molto simile)!")
         
         c1, c2 = st.columns(2)
         with c1:
@@ -363,7 +365,7 @@ with tab2:
                 try:
                     r_idx = product_ids.index(dup_id) + 2
                     for i, col in enumerate(cols):
-                        val = dup_data['values'].get(col, "") # Usa .get per sicurezza
+                        val = dup_data['values'].get(col, "")
                         ws.update_cell(r_idx, i + 2, val)
                     st.success(f"Aggiornato!")
                     st.session_state['pending_duplicate'] = None
@@ -372,17 +374,19 @@ with tab2:
                     st.rerun()
                 except Exception as e: st.error(f"Errore: {e}")
         with c2:
-            if st.button("❌ ANNULLA (Pulisci Form)"):
+            if st.button("❌ ANNULLA"):
                 st.session_state['pending_duplicate'] = None
-                st.session_state['draft_data'] = {} # Pulisce anche i dati
+                st.session_state['draft_data'] = {} 
                 st.rerun()
         st.divider()
 
+    # FORM
     with st.form("add_new_format_form"):
         form_values = {}
         missing_fields = []
         
         draft = st.session_state.get('draft_data')
+        # Check ulteriore prima di renderizzare
         if not isinstance(draft, dict): draft = {}
         
         id_val = str(draft.get(id_col, ""))
@@ -400,7 +404,6 @@ with tab2:
                 val = ""
                 missing_fields.append(c)
             
-            # Text area più alta per la descrizione
             height = 150 if "descrizione" in c.lower() else 0
             
             if len(val) > 50 or height > 0:
@@ -417,9 +420,8 @@ with tab2:
             if errors:
                 for e in errors: st.error(e)
             else:
-                # Controllo duplicato (Exact Match) nel caso l'utente abbia cambiato il nome a mano
+                # Controllo duplicato manuale
                 if new_id in product_ids:
-                    # Se l'utente sta cercando di salvare manualmente un nome che esiste già
                     st.session_state['pending_duplicate'] = {
                         'id': new_id,
                         'values': form_values
