@@ -25,8 +25,7 @@ if 'search_results' not in st.session_state:
 if 'pending_duplicate' not in st.session_state:
     st.session_state['pending_duplicate'] = None
 
-# --- FIX CRITICO PER IL CRASH ---
-# Assicuriamoci che draft_data sia SEMPRE un dizionario valido all'avvio
+# FIX CRITICO: Inizializzazione sicura
 if 'draft_data' not in st.session_state:
     st.session_state['draft_data'] = {}
 elif st.session_state['draft_data'] is None:
@@ -94,7 +93,7 @@ def read_file_content(uploaded_file):
 
 # --- 3. FUNZIONI AI ---
 def analyze_document_with_gemini(text_content, columns):
-    if "GOOGLE_API_KEY" not in st.secrets: return {} # Return empty dict, not None
+    if "GOOGLE_API_KEY" not in st.secrets: return {}
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 
     sys_prompt = f"""
@@ -128,7 +127,7 @@ def analyze_document_with_gemini(text_content, columns):
         return json.loads(clean_text.strip())
     except Exception as e:
         st.error(f"Errore Analisi AI ({DOC_MODEL}): {e}")
-        return {} # Ritorna dict vuoto in caso di errore
+        return {}
 
 def search_ai(query, dataframe, model_name):
     if "GOOGLE_API_KEY" not in st.secrets: return []
@@ -248,15 +247,14 @@ with tab2:
                 raw_text = read_file_content(uploaded_file)
                 if len(raw_text) > 10:
                     extracted = analyze_document_with_gemini(raw_text, [id_col] + cols)
-                    # FIX: Assegniamo un dizionario vuoto se l'estrazione fallisce (evita None)
                     st.session_state['draft_data'] = extracted if extracted is not None else {}
                     st.session_state['pending_duplicate'] = None 
                     
                     if st.session_state['draft_data']:
-                        st.success("Dati estratti!")
+                        st.success("Dati estratti! Compila i campi sottostanti.")
+                        # RIMOSSO st.rerun() PER EVITARE IL CAMBIO TAB
                     else:
                         st.error("L'AI non ha estratto dati validi.")
-                    st.rerun()
                 else:
                     st.error("Testo insufficiente.")
 
@@ -296,11 +294,8 @@ with tab2:
         form_values = {}
         missing_fields = []
         
-        # FIX CRITICO: Recupero dati BLINDATO
         draft = st.session_state.get('draft_data')
-        # Se draft è None o non è un dizionario, lo forziamo a {}
-        if not isinstance(draft, dict):
-            draft = {}
+        if not isinstance(draft, dict): draft = {}
         
         id_val = draft.get(id_col, "")
         if id_val == "[[RIEMPIMENTO MANUALE]]":
@@ -331,7 +326,6 @@ with tab2:
             if errors:
                 for e in errors: st.error(e)
             else:
-                # Controlla duplicato PRIMA di salvare
                 if new_id in product_ids:
                     st.session_state['pending_duplicate'] = {
                         'id': new_id,
