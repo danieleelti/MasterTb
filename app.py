@@ -14,7 +14,7 @@ from pptx import Presentation
 SEARCH_MODEL = "models/gemini-2.5-flash-lite"
 DOC_MODEL = "models/gemini-3-pro-preview"
 
-# --- INIZIALIZZAZIONE STATO ROBUSTA ---
+# --- INIZIALIZZAZIONE STATO ---
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'token_usage' not in st.session_state: 
     st.session_state['token_usage'] = {'input': 0, 'output': 0, 'total': 0}
@@ -25,8 +25,11 @@ if 'search_results' not in st.session_state:
 if 'pending_duplicate' not in st.session_state:
     st.session_state['pending_duplicate'] = None
 
-# Protezione specifica per draft_data: assicuriamoci che sia SEMPRE un dizionario
-if 'draft_data' not in st.session_state or st.session_state['draft_data'] is None:
+# --- FIX CRITICO PER IL CRASH ---
+# Assicuriamoci che draft_data sia SEMPRE un dizionario valido all'avvio
+if 'draft_data' not in st.session_state:
+    st.session_state['draft_data'] = {}
+elif st.session_state['draft_data'] is None:
     st.session_state['draft_data'] = {}
 
 # --- 1. LOGIN ---
@@ -91,7 +94,7 @@ def read_file_content(uploaded_file):
 
 # --- 3. FUNZIONI AI ---
 def analyze_document_with_gemini(text_content, columns):
-    if "GOOGLE_API_KEY" not in st.secrets: return None
+    if "GOOGLE_API_KEY" not in st.secrets: return {} # Return empty dict, not None
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 
     sys_prompt = f"""
@@ -115,12 +118,17 @@ def analyze_document_with_gemini(text_content, columns):
 
     try:
         response = model.generate_content(f"DOCUMENTO:\n{text_content}")
-        # Pulizia JSON (rimuove eventuali backticks markdown)
-        clean_json = response.text.replace("```json", "").replace("```", "").strip()
-        return json.loads(clean_json)
+        # Pulizia robusta del JSON
+        clean_text = response.text.strip()
+        if clean_text.startswith("```json"):
+            clean_text = clean_text[7:]
+        if clean_text.endswith("```"):
+            clean_text = clean_text[:-3]
+        
+        return json.loads(clean_text.strip())
     except Exception as e:
         st.error(f"Errore Analisi AI ({DOC_MODEL}): {e}")
-        return None
+        return {} # Ritorna dict vuoto in caso di errore
 
 def search_ai(query, dataframe, model_name):
     if "GOOGLE_API_KEY" not in st.secrets: return []
@@ -240,13 +248,15 @@ with tab2:
                 raw_text = read_file_content(uploaded_file)
                 if len(raw_text) > 10:
                     extracted = analyze_document_with_gemini(raw_text, [id_col] + cols)
-                    if extracted:
-                        st.session_state['draft_data'] = extracted
-                        st.session_state['pending_duplicate'] = None 
+                    # FIX: Assegniamo un dizionario vuoto se l'estrazione fallisce (evita None)
+                    st.session_state['draft_data'] = extracted if extracted is not None else {}
+                    st.session_state['pending_duplicate'] = None 
+                    
+                    if st.session_state['draft_data']:
                         st.success("Dati estratti!")
-                        st.rerun() # Forza refresh per mostrare i dati
                     else:
-                        st.error("Errore analisi AI.")
+                        st.error("L'AI non ha estratto dati validi.")
+                    st.rerun()
                 else:
                     st.error("Testo insufficiente.")
 
@@ -286,9 +296,11 @@ with tab2:
         form_values = {}
         missing_fields = []
         
-        # Recupero sicuro dei dati dalla sessione (Fix del crash AttributeError)
-        draft = st.session_state.get('draft_data', {})
-        if draft is None: draft = {} # Doppia sicurezza
+        # FIX CRITICO: Recupero dati BLINDATO
+        draft = st.session_state.get('draft_data')
+        # Se draft è None o non è un dizionario, lo forziamo a {}
+        if not isinstance(draft, dict):
+            draft = {}
         
         id_val = draft.get(id_col, "")
         if id_val == "[[RIEMPIMENTO MANUALE]]":
