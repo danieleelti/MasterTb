@@ -9,8 +9,8 @@ import ast
 from google.genai.types import HarmCategory, HarmBlockThreshold 
 
 # --- IMPOSTAZIONE MODELLO FISSO DI RIFERIMENTO ---
-# Modello fisso come richiesto dall'utente.
-SELECTED_AI_MODEL = 'gemini-3-pro-preview'
+# Modello stabile ad alte prestazioni per superare i blocchi 429 sul modello Preview.
+SELECTED_AI_MODEL = 'gemini-1.5-pro'
 
 # --- PROMPT DI SISTEMA FISSO ---
 # Istruzioni fisse che definiscono il ruolo del modello e l'output richiesto.
@@ -148,25 +148,17 @@ def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_i
             
         client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
         
-        # --- MODIFICA RICHIESTA: Seleziona SOLO Colonna 1 (Nome Format) e Colonna 16 (Descrizione Breve) ---
-        
-        # Le colonne del DataFrame (indice escluso) sono 0-based.
-        # Colonna 16 = Indice 15 (Descrizione Breve).
-        
+        # --- Seleziona SOLO Colonna 1 (Nome Format) e Colonna 16 (Descrizione Breve) ---
         all_column_names = list(catalogue_df.columns)
         
-        if len(all_column_names) >= 15: # 15 è l'indice 0-based di Descrizione Breve (Col. 16)
+        # Colonna 16 = Indice 15 (Descrizione Breve).
+        if len(all_column_names) >= 15: 
             col_16_name = all_column_names[15] 
-            
-            # Crea un sotto-DataFrame con l'indice (Nome Format) e la Colonna 16
             sub_df = catalogue_df[[col_16_name]] 
             catalogue_string = sub_df.to_markdown(index=True)
-            
         else:
-            # Fallback di sicurezza se la tabella è troppo piccola
             catalogue_string = catalogue_df.to_markdown(index=True)
-        
-        # --- FINE MODIFICA RICHIESTA ---
+        # --- FINE MODIFICA ---
 
         # Costruisco il prompt completo
         full_prompt_text = (
@@ -203,7 +195,7 @@ def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_i
         response = client.models.generate_content(
             model=SELECTED_AI_MODEL, 
             contents=full_prompt_text,
-            config=config # Passiamo la configurazione, inclusi i safety settings
+            config=config 
         )
         
         raw_text = response.text.strip()
