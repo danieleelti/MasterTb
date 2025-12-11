@@ -142,28 +142,45 @@ def search_ai(query, dataframe, model_name):
 # --- INTERFACCIA ---
 st.title("🦁 MasterTb Manager")
 
+# Sidebar solo per i token
 with st.sidebar:
-    st.header("⚙️ Configurazione")
-    if st.button("🔍 Scan Modelli"):
-        if "GOOGLE_API_KEY" in st.secrets:
-            genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-            try:
-                models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                if models: st.session_state['available_models'] = models
-            except: pass
-    
-    idx_def = 0
-    if DEFAULT_MODEL in st.session_state['available_models']:
-        idx_def = st.session_state['available_models'].index(DEFAULT_MODEL)
-    selected_model = st.selectbox("Modello AI", st.session_state['available_models'], index=idx_def)
-    
-    st.divider()
-    st.metric("Token Totali", st.session_state['token_usage']['total'])
+    st.header("🔢 Token")
+    st.metric("Totale", st.session_state['token_usage']['total'])
 
 tab1, tab2, tab3 = st.tabs(["👁️ Cerca & Modifica", "➕ Nuovo Format", "📄 Doc AI (PDF/PPT)"])
 
-# TAB 1: RICERCA
+# TAB 1: RICERCA (Con Scansione al Centro)
 with tab1:
+    # --- SEZIONE SCANNER MODELLI (CENTRALE) ---
+    col_scan, col_sel = st.columns([1, 3])
+    
+    with col_scan:
+        if st.button("🔍 Scansiona Modelli"):
+            if "GOOGLE_API_KEY" in st.secrets:
+                genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+                try:
+                    models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                    if models:
+                        st.session_state['available_models'] = models
+                        st.toast(f"Trovati {len(models)} modelli!", icon="✅")
+                    else:
+                        st.error("Nessun modello trovato.")
+                except Exception as e:
+                    st.error(f"Errore Scan: {e}")
+    
+    with col_sel:
+        idx_def = 0
+        if DEFAULT_MODEL in st.session_state['available_models']:
+            idx_def = st.session_state['available_models'].index(DEFAULT_MODEL)
+            
+        selected_model = st.selectbox(
+            "Seleziona Modello AI", 
+            st.session_state['available_models'],
+            index=idx_def
+        )
+
+    st.divider()
+
     with st.form("search_ai"):
         q = st.text_input(f"Cerca {id_col}", placeholder="es. attività outdoor")
         btn = st.form_submit_button("Cerca")
@@ -193,7 +210,7 @@ with tab1:
                 load_data.clear()
                 st.rerun()
 
-# TAB 2: NUOVO
+# TAB 2: NUOVO (Invariato)
 with tab2:
     with st.form("new"):
         d = {}
@@ -207,7 +224,7 @@ with tab2:
                 load_data.clear()
                 st.rerun()
 
-# TAB 3: DOC AI
+# TAB 3: DOC AI (Senza "Aggiungi come copia")
 with tab3:
     st.header("Caricamento Documenti")
     uploaded_file = st.file_uploader("Carica PDF o PPTX", type=['pdf', 'pptx', 'ppt'])
@@ -230,7 +247,6 @@ with tab3:
         
         data_to_save = {}
         col_id_name = id_col
-        extracted_id = st.session_state['extracted_data'].get(col_id_name, "")
         
         # Campi Editabili
         for col in [col_id_name] + cols:
@@ -249,7 +265,6 @@ with tab3:
             if current_id_val in product_ids:
                 st.warning(f"⚠️ Il format **'{current_id_val}'** ESISTE GIÀ!")
                 
-                # OPZIONE UNICA: SOVRASCRIVI
                 if st.button("🔄 SOVRASCRIVI i dati esistenti"):
                     try:
                         r_idx = product_ids.index(current_id_val) + 2
@@ -266,6 +281,7 @@ with tab3:
                 st.success("✅ Questo format è NUOVO.")
                 if st.button("💾 Aggiungi al Foglio"):
                     try:
+                        # Ricostruiamo la lista esatta basandoci sull'header del foglio
                         row_to_append = [data_to_save[col_id_name]] + [data_to_save[c] for c in cols]
                         ws.append_row(row_to_append)
                         st.success(f"Format '{current_id_val}' aggiunto!")
