@@ -51,6 +51,14 @@ st.markdown("""
         background-color: #f9f9f9;
         transition: all 0.2s ease-in-out;
     }
+    .diff-box {
+        padding: 10px;
+        border-radius: 5px;
+        margin-bottom: 5px;
+        border: 1px solid #ddd;
+    }
+    .old-val { background-color: #ffe6e6; color: #b30000; text-decoration: line-through; padding: 2px 5px; border-radius: 3px;}
+    .new-val { background-color: #e6fffa; color: #006644; font-weight: bold; padding: 2px 5px; border-radius: 3px;}
     </style>
 """, unsafe_allow_html=True)
 
@@ -62,6 +70,10 @@ if 'search_results' not in st.session_state:
     st.session_state['search_results'] = None
 if 'pending_duplicate' not in st.session_state:
     st.session_state['pending_duplicate'] = None
+
+# Stato per modifiche in attesa di conferma
+if 'pending_changes' not in st.session_state:
+    st.session_state['pending_changes'] = None
 
 # Inizializzazione sicura draft_data (Per nuovi upload)
 if 'draft_data' not in st.session_state:
@@ -151,9 +163,7 @@ def read_file_content(uploaded_file):
     return text
 
 def create_slug(text):
-    """Crea uno slug valido per l'URL dal nome del format."""
     if not text: return ""
-    # Rimuove caratteri speciali, mette tutto lowercase, sostituisce spazi con -
     text = text.lower().strip()
     text = re.sub(r'[^a-z0-9\s-]', '', text)
     text = re.sub(r'\s+', '-', text)
@@ -170,7 +180,6 @@ def analyze_document_with_gemini(text_content, columns):
             desc_col_name = c
             break
 
-    # Prompt aggiornato con REGOLE DI FORMATTAZIONE SPECIFICHE
     sys_prompt = f"""
     Sei un esperto copywriter e data entry. Analizza il testo fornito.
     
@@ -180,11 +189,11 @@ def analyze_document_with_gemini(text_content, columns):
     1. Campo Chiave: '{columns[0]}' (NOME FORMAT).
     2. Campo '{desc_col_name}': Scrivi un paragrafo discorsivo di ALMENO 5-6 RIGHE COMPLETE. Descrivi l'attività in modo coinvolgente.
     
-    REGOLE SPECIFICHE PER I CAMPI:
-    - Campo 'Social': Se l'attività prevede foto/video o condivisione, scrivi "SI", altrimenti "NO".
-    - Campo 'Ranking': Valuta l'intensità/complessità da 1 a 5. Scrivi solo il numero intero (es. 3).
-    - Campo 'Durata Ideale': Se trovi un range (es. 2-4 ore), calcola la MEDIA (es. 3). Scrivi solo il numero o la media.
-    - Se l'informazione MANCA DEL TUTTO, scrivi "[[RIEMPIMENTO MANUALE]]".
+    REGOLE SPECIFICHE:
+    - Campo 'Social': Solo "SI" o "NO".
+    - Campo 'Ranking': Solo numero intero da 1 a 5.
+    - Campo 'Durata Ideale': Calcola la MEDIA se c'è un range. Scrivi solo il numero.
+    - Se l'informazione MANCA, scrivi "[[RIEMPIMENTO MANUALE]]".
     
     Rispondi SOLO con il JSON.
     """
@@ -215,12 +224,11 @@ def search_ai(query, dataframe):
     
     sys_prompt = """
     Sei un Senior Event Manager esperto in Team Building.
-    
     Analizza la RICHIESTA dell'utente e trova nel CATALOGO i format più pertinenti.
     
     THINKING PROCESS:
     1. Astrai la richiesta (es. "ponte tibetano" -> "Outdoor/Avventura").
-    2. Cerca per ASSOCIAZIONE DI IDEE, non solo keyword esatte.
+    2. Cerca per ASSOCIAZIONE DI IDEE.
     3. Restituisci i NOMI DEI FORMAT (ID colonna 1).
     
     Output: SOLO lista Python. Es: ['Format A', 'Format B'].
@@ -349,89 +357,83 @@ if st.session_state['search_results'] is not None:
     st.info(f"Filtro AI attivo: {len(options)} format trovati.")
     if st.button("Mostra Tutti"):
         st.session_state['search_results'] = None
+        st.session_state['pending_changes'] = None
         st.rerun()
+    options = [""] + options # Aggiunge opzione vuota
 else:
-    options = product_ids
+    options = [""] + product_ids # Aggiunge opzione vuota a tutti
 
-# 3. SELEZIONE E FORM
+# 3. SELEZIONE
 is_new_mode = False
 if st.session_state['draft_data'] and not st.session_state['pending_duplicate']:
     is_new_mode = True
     st.info("✏️ **MODALITÀ CREAZIONE**: Stai modificando i dati estratti dal file caricato.")
     if st.button("🔙 Annulla Creazione"):
         st.session_state['draft_data'] = {}
+        st.session_state['pending_changes'] = None
         st.rerun()
 else:
-    selected_id = st.selectbox("Seleziona Format da Modificare", options)
+    # IL SELECTBOX ORA PARTE VUOTO ("") GRAZIE ALLA PRIMA OPZIONE
+    selected_id = st.selectbox("Seleziona Format da Modificare", options, index=0)
 
+# 4. LOGICA "FOGLIO BIANCO"
+if not is_new_mode and not selected_id:
+    st.info("👈 Seleziona un format dal menu o usa la ricerca per iniziare.")
+    st.stop() # FERMA IL CARICAMENTO QUI SE NON C'È SELEZIONE
+
+# 5. FORM
 st.markdown("### 📝 Dettagli Format")
+
+# Logica sorgente dati
+if is_new_mode:
+    source_data = st.session_state['draft_data']
+    current_id_val = str(source_data.get(id_col, ""))
+    submit_label = "🧐 VERIFICA DATI (Step 1/2)"
+    # Se nuovo, non c'è confronto con vecchio DB
+else:
+    source_data = df.loc[selected_id].to_dict()
+    current_id_val = selected_id
+    submit_label = "🧐 VERIFICA MODIFICHE (Step 1/2)"
 
 with st.form("master_form"):
     form_values = {}
     
-    if is_new_mode:
-        source_data = st.session_state['draft_data']
-        current_id_val = str(source_data.get(id_col, ""))
-        submit_label = "💾 SALVA NUOVO FORMAT"
-    else:
-        if selected_id:
-            source_data = df.loc[selected_id].to_dict()
-            current_id_val = selected_id
-            submit_label = "💾 SALVA MODIFICHE"
-        else:
-            st.warning("Seleziona un format o carica un file.")
-            st.form_submit_button("...")
-            st.stop()
-
-    # RENDERIZZA ID
+    # ID
     if is_new_mode:
         new_id = st.text_input(f"**{id_col} (UNICO)**", value=current_id_val)
     else:
         st.text_input(f"**{id_col}**", value=current_id_val, disabled=True)
         new_id = current_id_val
 
-    # RENDERIZZA COLONNE CON LOGICA SPECIFICA
+    # CAMPI
     for c in cols:
         val = str(source_data.get(c, ""))
         c_lower = c.lower()
-        
-        # Pulizia placeholder AI
         if "[[RIEMPIMENTO MANUALE]]" in val: val = ""
         
-        # --- LOGICA CAMPI SPECIALI ---
-        
-        # 1. SOCIAL -> Solo SI/NO
+        # Logica widget specifici
         if "social" in c_lower:
             options_social = ["NO", "SI"]
-            # Cerca di capire cosa ha messo l'AI o il DB
-            idx_social = 0
-            if "si" in val.lower() or "yes" in val.lower(): idx_social = 1
+            idx_social = 1 if ("si" in val.lower() or "yes" in val.lower()) else 0
             form_values[c] = st.selectbox(f"**{c}**", options_social, index=idx_social)
-            
-        # 2. RANKING -> Solo 1-5
+        
         elif "ranking" in c_lower:
             options_ranking = ["1", "2", "3", "4", "5"]
-            # Tenta di trovare il numero nel valore attuale
             try:
-                curr_rank = str(int(float(val))) if val.strip() else "1"
-                if curr_rank not in options_ranking: curr_rank = "3" # Default medio
+                curr_rank = str(int(float(val))) if val.strip() else "3"
+                if curr_rank not in options_ranking: curr_rank = "3"
             except: curr_rank = "3"
-            
             form_values[c] = st.selectbox(f"**{c}**", options_ranking, index=options_ranking.index(curr_rank))
             
-        # 3. LINK WEBSITE -> Autogenerazione
         elif "link" in c_lower and "website" in c_lower:
-            # Se è vuoto o è un nuovo format, rigenera lo slug corretto
             if not val or is_new_mode:
                 slug = create_slug(new_id)
                 val = f"https://www.teambuilding.it/project/{slug}/"
             form_values[c] = st.text_input(f"**{c}**", value=val)
             
-        # 4. DURATA IDEALE (Placeholder hint)
         elif "durata" in c_lower and "ideale" in c_lower:
-             form_values[c] = st.text_input(f"**{c}** (Media in ore)", value=val, help="Inserisci un valore medio (es. 3)")
+             form_values[c] = st.text_input(f"**{c}** (Media in ore)", value=val)
 
-        # 5. ALTRI CAMPI (Testo libero o Area)
         else:
             height = 150 if "descrizione" in c_lower else 0
             if len(val) > 50 or height > 0:
@@ -439,40 +441,83 @@ with st.form("master_form"):
             else:
                 form_values[c] = st.text_input(f"**{c}**", value=val)
 
-    submitted = st.form_submit_button(submit_label, type="primary")
+    submitted = st.form_submit_button(submit_label)
 
     if submitted:
+        changes = {}
+        # CALCOLO DIFFERENZE
         if is_new_mode:
-            # SAVE NEW
-            if not new_id.strip():
-                st.error(f"Il campo {id_col} è obbligatorio.")
-            elif new_id in product_ids:
-                st.error("Esiste già un format con questo nome! Cambia nome.")
+            # Per nuovi, tutto è "cambiamento" rispetto al nulla
+            changes = {'_NEW_': True, 'id': new_id, 'data': form_values}
+        else:
+            # Per esistenti, confronto con source_data
+            for k, v in form_values.items():
+                original = str(source_data.get(k, ""))
+                if v != original:
+                    changes[k] = {'old': original, 'new': v}
+            
+        st.session_state['pending_changes'] = changes
+
+# 6. AREA DI CONFERMA (FUORI DAL FORM)
+if st.session_state['pending_changes']:
+    st.divider()
+    changes = st.session_state['pending_changes']
+    
+    if is_new_mode:
+        st.info(f"✨ **STO CREANDO IL NUOVO FORMAT:** {changes['id']}")
+        st.write("Verifica i dati sopra. Se è tutto ok, procedi.")
+        if st.button("✅ CONFERMA E SCRIVI SU GOOGLE (Definitivo)", type="primary"):
+            if not changes['id'].strip():
+                st.error("Manca ID!")
+            elif changes['id'] in product_ids:
+                st.error("Nome già esistente!")
             else:
                 try:
-                    row_to_append = [new_id] + [form_values[c] for c in cols]
+                    row_to_append = [changes['id']] + [changes['data'][c] for c in cols]
                     ws.append_row(row_to_append)
-                    st.success(f"Nuovo format '{new_id}' creato!")
+                    st.success("Salvato!")
                     st.session_state['draft_data'] = {}
+                    st.session_state['pending_changes'] = None
                     load_data.clear()
                     st.rerun()
-                except Exception as e: st.error(f"Errore salvataggio: {e}")
+                except Exception as e: st.error(f"Errore: {e}")
+
+    else:
+        # MODO EDIT
+        if not changes:
+            st.success("✅ Nessuna modifica rilevata rispetto al database.")
+            if st.button("Chiudi"):
+                st.session_state['pending_changes'] = None
+                st.rerun()
         else:
-            # UPDATE EXISTING
-            updates_count = 0
-            try:
-                row_idx = product_ids.index(selected_id) + 2
-                for col_name, new_val in form_values.items():
-                    old_val = str(source_data.get(col_name, ""))
-                    if old_val != new_val:
-                        col_idx = cols.index(col_name) + 2
-                        ws.update_cell(row_idx, col_idx, new_val)
-                        updates_count += 1
-                
-                if updates_count > 0:
-                    st.success(f"Salvato! Aggiornati {updates_count} campi.")
-                    load_data.clear()
+            st.warning("⚠️ **Rilevate Modifiche!** Controlla attentamente prima di salvare.")
+            
+            for k, v in changes.items():
+                st.markdown(f"""
+                <div class="diff-box">
+                    <strong>{k}</strong><br>
+                    <span class="old-val">OLD: {v['old'] if v['old'] else '(vuoto)'}</span> 
+                    &nbsp;➡️&nbsp; 
+                    <span class="new-val">NEW: {v['new']}</span>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            c_yes, c_no = st.columns(2)
+            with c_yes:
+                if st.button("✅ CONFERMA SALVATAGGIO", type="primary"):
+                    try:
+                        row_idx = product_ids.index(selected_id) + 2
+                        updates_count = 0
+                        for col_name, val_dict in changes.items():
+                            col_idx = cols.index(col_name) + 2
+                            ws.update_cell(row_idx, col_idx, val_dict['new'])
+                            updates_count += 1
+                        st.success(f"Salvato! {updates_count} campi aggiornati.")
+                        st.session_state['pending_changes'] = None
+                        load_data.clear()
+                        st.rerun()
+                    except Exception as e: st.error(f"Errore: {e}")
+            with c_no:
+                if st.button("❌ Annulla Modifiche"):
+                    st.session_state['pending_changes'] = None
                     st.rerun()
-                else:
-                    st.info("Nessuna modifica rilevata.")
-            except Exception as e: st.error(f"Errore aggiornamento: {e}")
