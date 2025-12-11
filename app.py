@@ -7,9 +7,6 @@ import ast
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
-# --- CONFIGURAZIONE MODELLO (Torniamo al 3.0 Preview come richiesto) ---
-SELECTED_AI_MODEL = 'gemini-3-pro-preview'
-
 # --- PROMPT DI SISTEMA ---
 FULL_SYSTEM_PROMPT = """
 Sei un assistente di ricerca specializzato in format di team building. Analizza la richiesta e il catalogo fornito.
@@ -98,10 +95,10 @@ def add_new_row(new_data):
     except Exception as e:
         return False, f"Errore: {e}"
 
-# --- FUNZIONE RICERCA CON GEMINI (Tuo Codice Esatto) ---
+# --- FUNZIONE RICERCA CON GEMINI ---
 
 @st.cache_data(show_spinner="Ricerca semantica in corso...")
-def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_id_col_name: str) -> list[str]:
+def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_id_col_name: str, model_name: str) -> list[str]:
     try:
         if "GOOGLE_API_KEY" not in st.secrets:
             return []
@@ -117,9 +114,9 @@ def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_i
         else:
             catalogue_string = catalogue_df.to_markdown(index=True)
 
-        # --- IL TUO CODICE ESATTO ---
+        # Configurazione Modello Dinamica
         model = genai.GenerativeModel(
-          model_name=SELECTED_AI_MODEL, 
+          model_name=model_name, 
           generation_config={"temperature": 0.0},
           system_instruction=FULL_SYSTEM_PROMPT,
           safety_settings={
@@ -129,7 +126,6 @@ def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_i
             HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
           },
         )
-        # -----------------------------
 
         final_prompt = f"CATALOGO PRODOTTI:\n{catalogue_string}\n\nQUERY UTENTE: {query}"
         
@@ -164,20 +160,22 @@ tab_view_edit, tab_add_format, tab_pdf_ppt = st.tabs(["👁️ Visualizza & Modi
 
 with tab_view_edit:
     st.header("Visualizza e Modifica")
-    st.info(f"Modello AI: **{SELECTED_AI_MODEL}**")
     
-    # --- FORM DI RICERCA (IL FIX FONDAMENTALE PER IL LOOP) ---
-    # Questo form impedisce a Streamlit di chiamare l'API ad ogni tasto premuto.
+    # --- SELETTORE MODELLO (Default: Gemini 3.0 Pro Preview) ---
+    model_options = ["gemini-3-pro-preview", "gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"]
+    selected_ai_model = st.selectbox("Versione Gemini:", model_options, index=0) # Index 0 = gemini-3-pro-preview
+    
+    # --- FORM DI RICERCA (BLOCCO LOOP) ---
     with st.form("search_form"):
         search_query_input = st.text_input(f"Cerca {product_id_col_name} con AI:", placeholder="es. format dove si vola")
         search_submitted = st.form_submit_button("Cerca con Gemini 🦁")
     
     filtered_ids = product_ids # Default: tutti i prodotti
     
-    # La logica parte SOLO se hai premuto il bottone
     if search_submitted and search_query_input:
         if "GOOGLE_API_KEY" in st.secrets:
-            gemini_results = search_formats_with_gemini(search_query_input, df, product_id_col_name)
+            # Passiamo il modello selezionato alla funzione
+            gemini_results = search_formats_with_gemini(search_query_input, df, product_id_col_name, selected_ai_model)
             if gemini_results:
                 filtered_ids = [id for id in gemini_results if id in product_ids]
                 if not filtered_ids: st.warning("Gemini ha trovato risultati, ma i nomi non corrispondono esattamente.")
@@ -198,6 +196,7 @@ with tab_view_edit:
                 for column in column_names:
                     val = str(product_data[column]) if pd.notna(product_data[column]) else ""
                     key = f"edit_{selected_product_id}_{column}"
+                    # Logica per text_area vs text_input
                     if len(val) > 80 or '\n' in val:
                         new_values[column] = st.text_area(f"**{column}**", value=val, key=key)
                     else:
@@ -241,4 +240,4 @@ with tab_add_format:
 
 with tab_pdf_ppt:
     st.header("Automazione Documenti")
-    st.info("Pronto per l'integrazione PDF/PPT.")
+    st.info("Pronto per l'integrazione PDF/PPT. Carica un file per testare.")
