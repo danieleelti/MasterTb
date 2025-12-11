@@ -7,237 +7,191 @@ import ast
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
-# --- PROMPT DI SISTEMA ---
-FULL_SYSTEM_PROMPT = """
-Sei un assistente di ricerca specializzato in format di team building. Analizza la richiesta e il catalogo fornito.
-ISTRUZIONI PER L'OUTPUT:
-1. DEVI leggere le colonne fornite nel 'CATALOGO PRODOTTI' (Nome Format e Descrizione Breve) per trovare corrispondenze semantiche.
-2. Considera solo i valori della colonna 'Nome Format' come output.
-3. L'output deve essere SOLO E SOLTANTO una lista Python di stringhe, ad esempio: ['Format A', 'Format B', 'Format C']. 
-4. Se non trovi nulla, restituisci una lista vuota: [].
-"""
+# --- CONFIGURAZIONE ---
+DEFAULT_MODEL = "gemini-1.5-flash" # Modello di fallback sicuro
+PRO_MODEL = "gemini-3-pro-preview" # Il tuo modello richiesto
 
-# --- 1. LOGICA DI ACCESSO TRAMITE PASSWORD ---
-if 'logged_in' not in st.session_state:
-    st.session_state['logged_in'] = False
+# --- INIZIALIZZAZIONE STATO ---
+if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
+if 'token_usage' not in st.session_state: 
+    st.session_state['token_usage'] = {'input': 0, 'output': 0, 'total': 0}
 
+# --- 1. LOGIN ---
 if not st.session_state['logged_in']:
-    st.title("Accesso richiesto per 🦁 MasterTb 🦁")
-    if "login_password" in st.secrets:
-        PASSWORD = st.secrets["login_password"]
-        with st.form("login_form"):
-            password_input = st.text_input("Inserisci la password", type="password")
-            submitted = st.form_submit_button("Accedi")
-            if submitted:
-                if password_input == PASSWORD:
-                    st.session_state['logged_in'] = True
-                    st.success("Accesso eseguito con successo!")
-                    st.rerun()
-                else:
-                    st.error("Password errata.")
-    else:
-        st.error("❌ Errore configurazione: manca 'login_password' nei secrets.")
+    st.title("🦁 MasterTb Accesso")
+    with st.form("login"):
+        pwd = st.text_input("Password", type="password")
+        if st.form_submit_button("Entra"):
+            if "login_password" in st.secrets and pwd == st.secrets["login_password"]:
+                st.session_state['logged_in'] = True
+                st.rerun()
+            else:
+                st.error("Password errata")
     st.stop()
 
-# --- VARIABILI GLOBALI E CONNESSIONE ---
-ws = None 
-
+# --- 2. CONNESSIONE GOOGLE SHEET ---
 @st.cache_resource
-def connect_to_sheet():
+def get_worksheet():
     try:
-        credentials_json = st.secrets["gcp_service_account"]
-        gc = gspread.service_account_from_dict(credentials_json)
-        sh = gc.open("MasterTbGoogleAi")
-        worksheet = sh.get_worksheet(0) 
-        return worksheet
+        creds = st.secrets["gcp_service_account"]
+        gc = gspread.service_account_from_dict(creds)
+        return gc.open("MasterTbGoogleAi").get_worksheet(0)
     except Exception as e:
-        st.error(f"❌ Errore connessione Google Sheets: {e}")
+        st.error(f"Errore connessione Sheet: {e}")
         st.stop()
 
-try:
-    ws = connect_to_sheet()
-except st.runtime.scriptrunner.StopException:
-    st.stop()
+ws = get_worksheet()
 
-@st.cache_data(ttl=60) 
-def get_all_records():
+@st.cache_data(ttl=60)
+def load_data():
+    df = pd.DataFrame(ws.get_all_records())
+    if not df.empty:
+        df.columns = [c.strip() for c in df.columns]
+        df.set_index(df.columns[0], inplace=True)
+    return df
+
+df = load_data()
+if df.empty: st.stop()
+
+# Dati di base
+product_ids = [str(i) for i in df.index.tolist()]
+cols = df.columns.tolist()
+id_col = df.index.name
+
+# --- 3. FUNZIONE AI (CON TOKEN COUNTER) ---
+def search_with_gemini(query, dataframe, model_name):
+    if "GOOGLE_API_KEY" not in st.secrets:
+        st.error("Manca API Key")
+        return []
+
+    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+    
+    # Costruzione contesto ottimizzato (JSON leggero solo con colonne utili)
+    # Prende indice (Nome) + Colonna 15 (Descrizione Breve se esiste, altrimenti tutto)
     try:
-        data = ws.get_all_records()
-        df = pd.DataFrame(data)
-        if not df.empty:
-            df.columns = [col.strip() for col in df.columns]
-            df.set_index(df.columns[0], inplace=True) 
-        return df
-    except Exception as e:
-        st.error(f"Errore recupero dati: {e}")
-        return pd.DataFrame() 
+        target_col = dataframe.columns[15] if len(dataframe.columns) > 15 else dataframe.columns[0]
+        context_data = dataframe[[target_col]].to_dict()[target_col] # Dizionario {Nome: Descrizione}
+        context_str = json.dumps(context_data, ensure_ascii=False)
+    except:
+        context_str = dataframe.to_string() # Fallback
 
-def update_cell(product_id, column_name, new_value):
-    try:
-        all_values = ws.get_all_values()
-        row_index = -1
-        for i, row in enumerate(all_values):
-            if row and row[0] == product_id:
-                row_index = i + 1 
-                break
-        if row_index == -1: return False, "ID non trovato."
-        header = [col.strip() for col in all_values[0]] 
-        col_index = header.index(column_name) + 1 
-        ws.update_cell(row_index, col_index, new_value)
-        return True, "Aggiornamento riuscito!"
-    except Exception as e:
-        return False, f"Errore: {e}"
+    sys_prompt = f"""Sei un esperto di team building. Cerca nel catalogo JSON fornito.
+    CATALOGO: {context_str}
+    
+    Trovami i 'Nome Format' (chiavi del JSON) che meglio rispondono alla richiesta utente.
+    Output: SOLO una lista Python di stringhe. Es: ["Format A", "Format B"].
+    Se nulla corrisponde: []."""
 
-def add_new_row(new_data):
-    try:
-        ws.insert_row(new_data, index=len(ws.col_values(1)) + 1)
-        return True, "Formato aggiunto!"
-    except Exception as e:
-        return False, f"Errore: {e}"
-
-# --- FUNZIONE RICERCA CON GEMINI ---
-
-@st.cache_data(show_spinner="Ricerca semantica in corso...")
-def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_id_col_name: str, model_name: str) -> list[str]:
-    try:
-        if "GOOGLE_API_KEY" not in st.secrets:
-            return []
-            
-        genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-        
-        # Preparazione dati: Solo Nome e Descrizione Breve per efficienza
-        all_column_names = list(catalogue_df.columns)
-        if len(all_column_names) >= 15: 
-            col_16_name = all_column_names[15] 
-            sub_df = catalogue_df[[col_16_name]] 
-            catalogue_string = sub_df.to_markdown(index=True)
-        else:
-            catalogue_string = catalogue_df.to_markdown(index=True)
-
-        # Configurazione Modello Dinamica
-        model = genai.GenerativeModel(
-          model_name=model_name, 
-          generation_config={"temperature": 0.0},
-          system_instruction=FULL_SYSTEM_PROMPT,
-          safety_settings={
+    # Configurazione Modello (Il tuo codice esatto)
+    model = genai.GenerativeModel(
+        model_name=model_name,
+        generation_config={"temperature": 0.0},
+        safety_settings={
             HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
             HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
             HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
             HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-          },
-        )
+        }
+    )
 
-        final_prompt = f"CATALOGO PRODOTTI:\n{catalogue_string}\n\nQUERY UTENTE: {query}"
+    try:
+        response = model.generate_content(f"RICHIESTA UTENTE: {query}\n{sys_prompt}")
         
-        response = model.generate_content(final_prompt)
-        raw_text = response.text.strip()
-        
-        match = re.search(r"(\[.*\])", raw_text, re.DOTALL)
-        list_string = match.group(1) if match else raw_text
-        
-        result_list = ast.literal_eval(list_string)
-        if isinstance(result_list, list):
-            return result_list
-        return []
+        # Conteggio Token
+        if response.usage_metadata:
+            st.session_state['token_usage']['input'] += response.usage_metadata.prompt_token_count
+            st.session_state['token_usage']['output'] += response.usage_metadata.candidates_token_count
+            st.session_state['token_usage']['total'] += response.usage_metadata.total_token_count
 
+        # Parsing
+        text = response.text.strip()
+        match = re.search(r"(\[.*\])", text, re.DOTALL)
+        return ast.literal_eval(match.group(1)) if match else []
+        
     except Exception as e:
-        st.error(f"Errore Gemini: {e}")
+        st.error(f"Errore Gemini ({model_name}): {e}")
         return []
 
-# --- INTERFACCIA UTENTE ---
+# --- INTERFACCIA ---
+st.title("🦁 MasterTb Manager")
 
-st.title("🦁 MasterTb 🦁")
-df = get_all_records()
+# Sidebar Counter
+with st.sidebar:
+    st.header("🔢 Token Sessione")
+    st.metric("Input", st.session_state['token_usage']['input'])
+    st.metric("Output", st.session_state['token_usage']['output'])
+    st.metric("Totale", st.session_state['token_usage']['total'])
+    if st.button("Reset Token"):
+        st.session_state['token_usage'] = {'input': 0, 'output': 0, 'total': 0}
+        st.rerun()
 
-if df.empty:
-    st.stop()
+tab1, tab2, tab3 = st.tabs(["👁️ Cerca & Modifica", "➕ Nuovo Format", "📄 Doc AI"])
 
-product_ids = [str(id) for id in df.index.tolist()]
-column_names = df.columns.tolist()
-product_id_col_name = df.index.name
+# TAB 1: RICERCA
+with tab1:
+    col_a, col_b = st.columns([3, 1])
+    with col_a:
+        st.subheader("Ricerca Intelligente")
+    with col_b:
+        # Selettore modello con 3.0 default
+        modello_scelto = st.selectbox("Modello", [PRO_MODEL, DEFAULT_MODEL, "gemini-1.5-pro"], index=0)
 
-tab_view_edit, tab_add_format, tab_pdf_ppt = st.tabs(["👁️ Visualizza & Modifica", "➕ Aggiungi Nuovo", "📄 Caricamento Doc."])
+    # FORM ANTI-LOOP
+    with st.form("search_ai"):
+        query = st.text_input("Cosa stai cercando?", placeholder="Es: attività all'aperto economiche")
+        cerca_btn = st.form_submit_button("Cerca con Gemini 🦁")
 
-with tab_view_edit:
-    st.header("Visualizza e Modifica")
+    ids_to_show = product_ids
     
-    # --- SELETTORE MODELLO (Default: Gemini 3.0 Pro Preview) ---
-    model_options = ["gemini-3-pro-preview", "gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"]
-    selected_ai_model = st.selectbox("Versione Gemini:", model_options, index=0) # Index 0 = gemini-3-pro-preview
-    
-    # --- FORM DI RICERCA (BLOCCO LOOP) ---
-    with st.form("search_form"):
-        search_query_input = st.text_input(f"Cerca {product_id_col_name} con AI:", placeholder="es. format dove si vola")
-        search_submitted = st.form_submit_button("Cerca con Gemini 🦁")
-    
-    filtered_ids = product_ids # Default: tutti i prodotti
-    
-    if search_submitted and search_query_input:
-        if "GOOGLE_API_KEY" in st.secrets:
-            # Passiamo il modello selezionato alla funzione
-            gemini_results = search_formats_with_gemini(search_query_input, df, product_id_col_name, selected_ai_model)
-            if gemini_results:
-                filtered_ids = [id for id in gemini_results if id in product_ids]
-                if not filtered_ids: st.warning("Gemini ha trovato risultati, ma i nomi non corrispondono esattamente.")
+    if cerca_btn and query:
+        with st.spinner(f"Chiedo a {modello_scelto}..."):
+            res = search_with_gemini(query, df, modello_scelto)
+            if res:
+                ids_to_show = [x for x in res if x in product_ids]
+                if not ids_to_show: st.warning("Trovati risultati ma non presenti nel DB attuale.")
             else:
-                st.warning("Nessuna corrispondenza semantica trovata.")
-        else:
-            st.error("Manca GOOGLE_API_KEY nei secrets.")
+                st.warning("Nessun risultato o errore API.")
 
-    if not filtered_ids:
-        st.error("Nessun formato da mostrare.")
-    else:
-        selected_product_id = st.selectbox(f"Seleziona {product_id_col_name}:", options=filtered_ids)
+    sel_id = st.selectbox(f"Seleziona {id_col}", ids_to_show)
+    
+    if sel_id:
+        # MODIFICA
+        row = df.loc[sel_id]
+        with st.form("edit"):
+            st.markdown(f"### Modifica: {sel_id}")
+            new_vals = {}
+            for c in cols:
+                val = str(row[c])
+                if len(val) > 60: new_vals[c] = st.text_area(c, val)
+                else: new_vals[c] = st.text_input(c, val)
+            
+            if st.form_submit_button("Salva su Google Sheet 💾"):
+                for c, v in new_vals.items():
+                    if str(row[c]) != v:
+                        r_idx = product_ids.index(sel_id) + 2 # +2 per header e 1-base
+                        c_idx = cols.index(c) + 1
+                        ws.update_cell(r_idx, c_idx, v)
+                        st.toast(f"Aggiornato {c}")
+                load_data.clear()
+                st.rerun()
+
+# TAB 2: AGGIUNTA
+with tab2:
+    st.header("Nuovo Format")
+    with st.form("new"):
+        d = {}
+        for c in cols:
+            d[c] = st.text_input(c) if c == id_col else st.text_area(c)
         
-        if selected_product_id:
-            product_data = df.loc[selected_product_id]
-            with st.form("edit_form"):
-                new_values = {}
-                for column in column_names:
-                    val = str(product_data[column]) if pd.notna(product_data[column]) else ""
-                    key = f"edit_{selected_product_id}_{column}"
-                    # Logica per text_area vs text_input
-                    if len(val) > 80 or '\n' in val:
-                        new_values[column] = st.text_area(f"**{column}**", value=val, key=key)
-                    else:
-                        new_values[column] = st.text_input(f"**{column}**", value=val, key=key)
-                
-                if st.form_submit_button("Salva Modifiche 💾"):
-                    changes = False
-                    for col, new_val in new_values.items():
-                        old_val = str(product_data[col]) if pd.notna(product_data[col]) else ""
-                        if old_val.strip() != str(new_val).strip():
-                            success, msg = update_cell(selected_product_id, col, new_val)
-                            if success: 
-                                st.success(f"Aggiornato {col}")
-                                changes = True
-                            else: st.error(msg)
-                    if changes:
-                        get_all_records.clear()
-                        st.rerun()
-                    else: st.warning("Nessuna modifica.")
-
-with tab_add_format:
-    st.header("Aggiungi Nuovo")
-    with st.form("add_form"):
-        new_row = {}
-        for col in column_names:
-            if col == product_id_col_name:
-                new_row[col] = st.text_input(f"**{col} (UNICO)** *", key=f"add_{col}")
+        if st.form_submit_button("Crea Riga"):
+            if d[id_col] in product_ids:
+                st.error("Esiste già!")
             else:
-                new_row[col] = st.text_area(f"**{col}**", key=f"add_{col}")
-        
-        if st.form_submit_button("Aggiungi 🚀"):
-            if not new_row[product_id_col_name].strip():
-                st.error("Nome mancante.")
-            elif new_row[product_id_col_name] in product_ids:
-                st.error("Esiste già.")
-            else:
-                if add_new_row([new_row[c] for c in column_names]):
-                    st.success("Aggiunto!")
-                    get_all_records.clear()
-                    st.rerun()
+                ws.append_row([d[c] for c in cols])
+                st.success("Fatto!")
+                load_data.clear()
+                st.rerun()
 
-with tab_pdf_ppt:
-    st.header("Automazione Documenti")
-    st.info("Pronto per l'integrazione PDF/PPT. Carica un file per testare.")
+# TAB 3: DOCS
+with tab3:
+    st.info("Area caricamento PDF/PPT pronta per implementazione.")
