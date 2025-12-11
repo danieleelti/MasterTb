@@ -164,6 +164,7 @@ def analyze_document_with_gemini(text_content, columns):
             desc_col_name = c
             break
 
+    # Prompt aggiornato per richiedere più testo nella descrizione
     sys_prompt = f"""
     Sei un esperto copywriter e data entry. Analizza il testo fornito.
     
@@ -171,7 +172,7 @@ def analyze_document_with_gemini(text_content, columns):
     {json.dumps(columns)}
     
     1. Campo Chiave: '{columns[0]}' (NOME FORMAT).
-    2. Campo '{desc_col_name}': DEVI SCRIVERE ALMENO 5 RIGHE COMPLETE. Elabora un testo ricco, accattivante e dettagliato basato sul documento.
+    2. Campo '{desc_col_name}': QUESTO È IL CAMPO PIÙ IMPORTANTE. Devi scrivere un paragrafo discorsivo di ALMENO 5-6 RIGHE COMPLETE. Descrivi l'attività in modo coinvolgente, spiegando cosa si fa, gli obiettivi e l'atmosfera. Non usare elenchi puntati qui, ma testo scorrevole.
     
     REGOLE GENERALI:
     - Se trovi l'informazione, scrivila.
@@ -286,7 +287,7 @@ with tab1:
                 for c, nv in new_vals.items():
                     if str(row[c]) != nv:
                         r = product_ids.index(sel) + 2
-                        ci = cols.index(c) + 1
+                        ci = cols.index(c) + 2 # Corretto: Cols è lista headers senza ID, sheet parte da 1.
                         ws.update_cell(r, ci, nv)
                 st.success("Salvato!")
                 load_data.clear()
@@ -308,17 +309,6 @@ with tab2:
                 if len(raw_text) > 10:
                     extracted = analyze_document_with_gemini(raw_text, [id_col] + cols)
                     
-                    # --- SANITIZATION ANTI-CRASH (IL FIX CRITICO) ---
-                    if extracted is None:
-                        extracted = {}
-                    elif isinstance(extracted, list):
-                        # Se Gemini restituisce una lista, prendiamo il primo elemento
-                        extracted = extracted[0] if len(extracted) > 0 else {}
-                    
-                    if not isinstance(extracted, dict):
-                        extracted = {} # Fallback finale
-                    # -----------------------------------------------
-
                     # --- FUZZY MATCH LOGIC ---
                     extracted_name = str(extracted.get(id_col, "")).strip()
                     matches = difflib.get_close_matches(extracted_name, product_ids, n=1, cutoff=0.85)
@@ -326,17 +316,36 @@ with tab2:
                     if matches:
                         existing_id = matches[0]
                         st.toast(f"⚠️ Trovato format simile: {existing_id}", icon="🔄")
-                        extracted[id_col] = existing_id 
+                        
+                        # 1. Recupera i dati ATTUALI dal Google Sheet (tramite il DF caricato)
+                        current_data = df.loc[existing_id].to_dict()
+                        
+                        # 2. Identifica la colonna descrizione
+                        desc_col_name = "Descrizione Breve" # Fallback
+                        for c in cols:
+                            if "descrizione" in c.lower():
+                                desc_col_name = c
+                                break
+                        
+                        # 3. Prepara il pacchetto per l'aggiornamento
+                        # Manteniamo TUTTO uguale, cambiamo solo la descrizione con quella dell'AI
+                        new_desc = extracted.get(desc_col_name, "")
+                        
                         st.session_state['pending_duplicate'] = {
                             'id': existing_id,
-                            'values': extracted
+                            'target_col': desc_col_name,
+                            'new_value': new_desc,
+                            'old_value': current_data.get(desc_col_name, "")
                         }
                     else:
                         st.session_state['pending_duplicate'] = None
+                        # Solo se NON è un duplicato salviamo i dati draft per il form di creazione
+                        st.session_state['draft_data'] = extracted if extracted else {}
 
-                    st.session_state['draft_data'] = extracted
-                    
-                    if st.session_state['draft_data']:
+                    # Logica messaggi
+                    if st.session_state['pending_duplicate']:
+                        st.warning(f"Format esistente rilevato: {matches[0]}. Vedi opzioni sotto.")
+                    elif st.session_state['draft_data']:
                         st.success("Dati estratti! Verifica i campi sotto.")
                     else:
                         st.error("L'AI non ha estratto dati validi.")
@@ -353,28 +362,45 @@ with tab2:
     st.divider()
     st.markdown("### 2. Dettagli Format")
     
-    # BOX DI SCELTA
+    # BOX DI SCELTA (Appare se c'è un pending duplicate)
     if st.session_state['pending_duplicate']:
         dup_data = st.session_state['pending_duplicate']
         dup_id = dup_data['id']
-        st.warning(f"⚠️ **ATTENZIONE:** Il format **'{dup_id}'** esiste già (o è molto simile)!")
+        target_col = dup_data.get('target_col', "Descrizione Breve")
+        new_val = dup_data.get('new_value', "")
+        old_val = dup_data.get('old_value', "")
+
+        st.warning(f"⚠️ **ATTENZIONE:** Il format **'{dup_id}'** esiste già!")
         
+        st.markdown(f"**L'AI propone di aggiornare SOLO la colonna '{target_col}'** (mantenendo invariati gli altri dati).")
+        
+        col_diff1, col_diff2 = st.columns(2)
+        with col_diff1:
+            st.caption("🔴 Descrizione Attuale")
+            st.info(old_val, icon="ℹ️")
+        with col_diff2:
+            st.caption("🟢 Nuova Descrizione (AI)")
+            st.success(new_val, icon="✨")
+
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("🔄 AGGIORNA ESISTENTE", type="primary"):
+            if st.button("🔄 AGGIORNA SOLO DESCRIZIONE", type="primary"):
                 try:
-                    r_idx = product_ids.index(dup_id) + 2
-                    for i, col in enumerate(cols):
-                        val = dup_data['values'].get(col, "")
-                        ws.update_cell(r_idx, i + 2, val)
-                    st.success(f"Aggiornato!")
+                    # Trova coordinate
+                    r_idx = product_ids.index(dup_id) + 2 # +2 headers e 0-index
+                    c_idx = cols.index(target_col) + 2 # +2 (ID è col 1)
+                    
+                    # Aggiorna SOLO quella cella
+                    ws.update_cell(r_idx, c_idx, new_val)
+                    
+                    st.toast(f"Descrizione aggiornata per {dup_id}!", icon="✅")
                     st.session_state['pending_duplicate'] = None
                     st.session_state['draft_data'] = {}
                     load_data.clear()
                     st.rerun()
-                except Exception as e: st.error(f"Errore: {e}")
+                except Exception as e: st.error(f"Errore aggiornamento cella: {e}")
         with c2:
-            if st.button("❌ ANNULLA"):
+            if st.button("❌ ANNULLA (Ignora aggiornamento)"):
                 st.session_state['pending_duplicate'] = None
                 st.session_state['draft_data'] = {} 
                 st.rerun()
@@ -386,7 +412,6 @@ with tab2:
         missing_fields = []
         
         draft = st.session_state.get('draft_data')
-        # Check ulteriore prima di renderizzare
         if not isinstance(draft, dict): draft = {}
         
         id_val = str(draft.get(id_col, ""))
@@ -404,6 +429,7 @@ with tab2:
                 val = ""
                 missing_fields.append(c)
             
+            # Text area più alta per la descrizione
             height = 150 if "descrizione" in c.lower() else 0
             
             if len(val) > 50 or height > 0:
@@ -420,11 +446,11 @@ with tab2:
             if errors:
                 for e in errors: st.error(e)
             else:
-                # Controllo duplicato manuale
+                # Controllo duplicato manuale (se l'utente cambia nome a mano)
                 if new_id in product_ids:
                     st.session_state['pending_duplicate'] = {
                         'id': new_id,
-                        'values': form_values
+                        'values': form_values # Fallback per manuale
                     }
                     st.rerun()
                 else:
