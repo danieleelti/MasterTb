@@ -1,5 +1,5 @@
 import streamlit as st
-import streamlit.components.v1 as components  # Import necessario per il fix JS
+import streamlit.components.v1 as components
 import gspread
 import pandas as pd
 import json
@@ -10,52 +10,45 @@ import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import pypdf
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 # --- CONFIGURAZIONE ---
 SEARCH_MODEL = "models/gemini-2.5-flash-lite"
 DOC_MODEL = "models/gemini-3-pro-preview"
 
-# --- INIEZIONE JAVASCRIPT & CSS PER EFFETTO DRAG & DROP REALE ---
-# Questo script forza il browser a cambiare stile QUANDO stai trascinando il file
+# --- CSS E JS PER DRAG & DROP VISUALE ---
 components.html("""
 <script>
-    // Osserva il documento per trovare la dropzone anche se Streamlit la ricarica
     const observer = new MutationObserver(() => {
         const dropzone = window.parent.document.querySelector('[data-testid="stFileUploaderDropzone"]');
         if (dropzone && !dropzone.classList.contains('drag-listener')) {
-            dropzone.classList.add('drag-listener'); // Marca come "ascoltato"
-            
-            // Quando un file entra nella zona
+            dropzone.classList.add('drag-listener');
             dropzone.addEventListener('dragover', (e) => {
                 e.preventDefault();
                 dropzone.style.border = '3px dashed #FF4B4B';
                 dropzone.style.backgroundColor = '#FFECEC';
                 dropzone.style.transform = 'scale(1.02)';
-                dropzone.style.transition = 'all 0.2s ease-in-out';
             });
-
-            // Quando il file esce o viene rilasciato (reset stile)
-            const resetStyle = () => {
-                dropzone.style.border = '1px solid #ccc'; // O lo stile default di Streamlit
-                dropzone.style.backgroundColor = '';
+            const reset = () => {
+                dropzone.style.border = '1px dashed #aaa';
+                dropzone.style.backgroundColor = '#f9f9f9';
                 dropzone.style.transform = 'scale(1.0)';
             };
-
-            dropzone.addEventListener('dragleave', resetStyle);
-            dropzone.addEventListener('drop', resetStyle);
+            dropzone.addEventListener('dragleave', reset);
+            dropzone.addEventListener('drop', reset);
         }
     });
     observer.observe(window.parent.document.body, { childList: true, subtree: true });
 </script>
 """, height=0, width=0)
 
-# CSS di base per rendere il box gradevole anche a riposo
 st.markdown("""
     <style>
     [data-testid='stFileUploaderDropzone'] {
         border: 1px dashed #aaa;
         border-radius: 10px;
         background-color: #f9f9f9;
+        transition: all 0.2s ease-in-out;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -70,12 +63,14 @@ if 'search_results' not in st.session_state:
     st.session_state['search_results'] = None
 if 'pending_duplicate' not in st.session_state:
     st.session_state['pending_duplicate'] = None
-
-# FIX CRITICO: Inizializzazione sicura
 if 'draft_data' not in st.session_state:
     st.session_state['draft_data'] = {}
 elif st.session_state['draft_data'] is None:
     st.session_state['draft_data'] = {}
+
+# Variabili Debug
+if 'debug_raw_text' not in st.session_state: st.session_state['debug_raw_text'] = ""
+if 'debug_ai_response' not in st.session_state: st.session_state['debug_ai_response'] = ""
 
 # --- 1. LOGIN ---
 if not st.session_state['logged_in']:
@@ -119,7 +114,32 @@ product_ids = [str(i) for i in df.index.tolist()]
 cols = df.columns.tolist()
 id_col = df.index.name
 
-# --- HELPER LETTURA FILE ---
+# --- HELPER LETTURA FILE AVANZATO ---
+def get_shape_text_recursive(shape):
+    """Estrae testo da forme, gruppi e tabelle in modo ricorsivo."""
+    text = ""
+    try:
+        # 1. Testo diretto
+        if hasattr(shape, "has_text_frame") and shape.has_text_frame:
+            text += shape.text_frame.text + "\n"
+        
+        # 2. Tabelle
+        if hasattr(shape, "has_table") and shape.has_table:
+            for row in shape.table.rows:
+                for cell in row.cells:
+                    if hasattr(cell, "text_frame"):
+                        text += cell.text_frame.text + " "
+            text += "\n"
+
+        # 3. Gruppi (Recursion)
+        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            for child in shape.shapes:
+                text += get_shape_text_recursive(child)
+                
+    except Exception:
+        pass # Ignora errori su forme esotiche
+    return text
+
 def read_file_content(uploaded_file):
     text = ""
     try:
@@ -128,15 +148,12 @@ def read_file_content(uploaded_file):
             for page in pdf_reader.pages:
                 extracted = page.extract_text()
                 if extracted: text += extracted + "\n"
+                
         elif uploaded_file.name.endswith('.pptx') or uploaded_file.name.endswith('.ppt'):
             prs = Presentation(uploaded_file)
             for slide in prs.slides:
-                # Metodo corretto per leggere le forme in PPTX
                 for shape in slide.shapes:
-                    if hasattr(shape, "has_text_frame") and shape.has_text_frame:
-                        text += shape.text_frame.text + "\n"
-                    elif hasattr(shape, "text"):
-                        text += shape.text + "\n"
+                    text += get_shape_text_recursive(shape)
     except Exception as e:
         st.error(f"Errore lettura file: {e}")
     return text
@@ -147,18 +164,18 @@ def analyze_document_with_gemini(text_content, columns):
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 
     sys_prompt = f"""
-    Sei un esperto data entry. Estrai dati dal testo del documento per compilare un database.
+    Sei un esperto data entry. Analizza il testo fornito ed estrai i dati per compilare le colonne richieste.
     
-    COLONNE RICHIESTE (Chiavi JSON):
+    COLONNE OBBLIGATORIE (Chiavi JSON esatte):
     {json.dumps(columns)}
     
-    IMPORTANTE: Il campo '{columns[0]}' è il NOME DEL FORMAT. Cerca il titolo principale.
+    Campo chiave: '{columns[0]}' (NOME FORMAT).
     
     REGOLE:
-    1. Cerca nel testo i valori corrispondenti alle colonne.
+    1. Cerca attentamente nel testo. Spesso il Nome Format è il titolo.
     2. Se trovi il dato, inseriscilo.
     3. Se il dato NON c'è, scrivi: "[[RIEMPIMENTO MANUALE]]".
-    4. Rispondi SOLO con un JSON valido piatto (chiave-valore).
+    4. Rispondi SOLO con un JSON valido piatto.
     """
 
     model = genai.GenerativeModel(
@@ -169,14 +186,18 @@ def analyze_document_with_gemini(text_content, columns):
 
     try:
         response = model.generate_content(f"TESTO DOCUMENTO:\n{text_content}")
-        # Pulizia robusta
+        # Pulizia JSON
         clean_text = response.text.strip()
         if clean_text.startswith("```json"): clean_text = clean_text[7:]
         if clean_text.endswith("```"): clean_text = clean_text[:-3]
         
+        # Salvataggio per Debug
+        st.session_state['debug_ai_response'] = clean_text
+        
         return json.loads(clean_text.strip())
     except Exception as e:
         st.error(f"Errore Analisi AI ({DOC_MODEL}): {e}")
+        st.session_state['debug_ai_response'] = f"ERRORE: {str(e)}"
         return {}
 
 def search_ai(query, dataframe, model_name):
@@ -185,27 +206,19 @@ def search_ai(query, dataframe, model_name):
     
     context_str = dataframe.to_markdown(index=True)
 
-    sys_prompt = """
-    Sei un assistente di ricerca. Analizza il catalogo.
-    Output: SOLO lista Python di stringhe (Nomi Format). Es: ['Format A'].
-    Se nulla corrisponde: [].
-    """
+    sys_prompt = "Sei un assistente di ricerca. Output: SOLO lista Python stringhe Nomi Format. Es: ['Nome A']."
     
     model = genai.GenerativeModel(model_name=model_name, generation_config={"temperature": 0.0}, system_instruction=sys_prompt)
     try:
         response = model.generate_content(f"CATALOGO:\n{context_str}\n\nRICHIESTA: {query}")
-        
         if response.usage_metadata:
             st.session_state['token_usage']['input'] += response.usage_metadata.prompt_token_count
             st.session_state['token_usage']['output'] += response.usage_metadata.candidates_token_count
             st.session_state['token_usage']['total'] += response.usage_metadata.total_token_count
-
-        text = response.text.strip()
-        match = re.search(r"(\[.*\])", text, re.DOTALL)
+        
+        match = re.search(r"(\[.*\])", response.text.strip(), re.DOTALL)
         return ast.literal_eval(match.group(1)) if match else []
-    except Exception as e:
-        st.error(f"Errore API: {e}")
-        return []
+    except: return []
 
 # --- INTERFACCIA ---
 st.title("🦁 MasterTb Manager")
@@ -247,10 +260,8 @@ with tab1:
             res = search_ai(q, df, selected_model)
             if res: 
                 valid_ids = [x for x in res if x in product_ids]
-                if valid_ids: st.session_state['search_results'] = valid_ids
-                else: 
-                    st.warning("Nessun risultato valido.")
-                    st.session_state['search_results'] = None
+                st.session_state['search_results'] = valid_ids if valid_ids else None
+                if not valid_ids: st.warning("Nessun risultato valido.")
             else: 
                 st.warning("Nessun risultato.")
                 st.session_state['search_results'] = None
@@ -295,26 +306,36 @@ with tab2:
         if st.button("⚡ Estrai Dati"):
             with st.spinner("Analisi in corso..."):
                 raw_text = read_file_content(uploaded_file)
+                st.session_state['debug_raw_text'] = raw_text # Save raw text
+                
                 if len(raw_text) > 10:
                     extracted = analyze_document_with_gemini(raw_text, [id_col] + cols)
-                    st.session_state['draft_data'] = extracted if extracted is not None else {}
+                    st.session_state['draft_data'] = extracted if extracted else {}
                     st.session_state['pending_duplicate'] = None 
                     
                     if st.session_state['draft_data']:
-                        st.success("Dati estratti! Compila i campi sottostanti.")
+                        st.success("Dati estratti!")
                     else:
                         st.error("L'AI non ha estratto dati validi.")
                 else:
-                    st.error("Testo insufficiente.")
+                    st.error("Testo insufficiente (Forse il PPTX ha solo immagini?). Controlla il Debug qui sotto.")
+
+    # --- DEBUG SECTION (RESTAURATA) ---
+    if st.session_state.get('debug_raw_text'):
+        with st.expander("🕵️‍♂️ DEBUG: Vedi cosa ha letto il sistema"):
+            st.markdown("**Testo Letto dal File (Primi 2000 caratteri):**")
+            st.text(st.session_state['debug_raw_text'][:2000])
+            st.divider()
+            st.markdown("**Risposta JSON dall'AI:**")
+            st.code(st.session_state.get('debug_ai_response', 'Nessuna risposta'))
 
     st.divider()
     st.markdown("### 2. Dettagli Format")
     
-    # --- GESTIONE DECISIONALE DUPLICATI ---
     if st.session_state['pending_duplicate']:
         dup_data = st.session_state['pending_duplicate']
         dup_id = dup_data['id']
-        st.warning(f"⚠️ **ATTENZIONE:** Il format **'{dup_id}'** esiste già nel database!")
+        st.warning(f"⚠️ **ATTENZIONE:** Il format **'{dup_id}'** esiste già!")
         
         c1, c2 = st.columns(2)
         with c1:
@@ -324,21 +345,18 @@ with tab2:
                     for i, col in enumerate(cols):
                         val = dup_data['values'][col]
                         ws.update_cell(r_idx, i + 2, val)
-                    st.success(f"Format '{dup_id}' aggiornato!")
+                    st.success(f"Aggiornato!")
                     st.session_state['pending_duplicate'] = None
                     st.session_state['draft_data'] = {}
                     load_data.clear()
                     st.rerun()
                 except Exception as e: st.error(f"Errore: {e}")
-        
         with c2:
-            if st.button("❌ ANNULLA OPERAZIONE"):
+            if st.button("❌ ANNULLA"):
                 st.session_state['pending_duplicate'] = None
                 st.rerun()
-                
         st.divider()
 
-    # --- FORM PRINCIPALE ---
     with st.form("add_new_format_form"):
         form_values = {}
         missing_fields = []
@@ -385,8 +403,8 @@ with tab2:
                     try:
                         row_to_append = [new_id] + [form_values[c] for c in cols]
                         ws.append_row(row_to_append)
-                        st.success(f"✅ Format '{new_id}' salvato!")
+                        st.success(f"Salvato!")
                         st.session_state['draft_data'] = {}
                         load_data.clear()
                     except Exception as e:
-                        st.error(f"Errore salvataggio: {e}")
+                        st.error(f"Errore: {e}")
