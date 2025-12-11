@@ -10,7 +10,7 @@ from google.genai.types import HarmCategory, HarmBlockThreshold
 
 # --- IMPOSTAZIONE MODELLO FISSO DI RIFERIMENTO ---
 # Modello stabile ad alte prestazioni per superare i blocchi 429 sul modello Preview.
-SELECTED_AI_MODEL = 'gemini-1.5-pro'
+SELECTED_AI_MODEL = 'gemini-2.5-pro'
 
 # --- PROMPT DI SISTEMA FISSO ---
 # Istruzioni fisse che definiscono il ruolo del modello e l'output richiesto.
