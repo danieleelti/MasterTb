@@ -125,12 +125,13 @@ def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_i
     Restituisce una lista di nomi di formati pertinenti.
     """
     try:
-        if "GEMINI_API_KEY" not in st.secrets:
+        # --- MODIFICA RICHIESTA (Chiave API): Usa GOOGLE_API_KEY come nei secrets ---
+        if "GOOGLE_API_KEY" not in st.secrets:
             # Fallback se la chiave AI non è configurata
             return [] 
             
         # 1. Inizializza il client Gemini
-        client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+        client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"]) # Usa GOOGLE_API_KEY
 
         # 2. Prepara il contesto dei dati (converti il DataFrame in stringa)
         catalogue_string = catalogue_df.to_markdown(index=True)
@@ -206,7 +207,7 @@ tab_view_edit, tab_add_format, tab_pdf_ppt = st.tabs([
 with tab_view_edit:
     st.header("Visualizza e Modifica un Formato Esistente")
     
-    # --- POSIZIONE DELLA CONFIGURAZIONE AI (MODIFICA RICHIESTA) ---
+    # --- POSIZIONE DELLA CONFIGURAZIONE AI ---
     model_options = ["gemini-3-pro-preview", "gemini-2.0-flash-exp", "gemini-1.5-pro-latest", "gemini-1.5-flash"]
     if "gemini-3-pro-preview" not in model_options: model_options.insert(0, "gemini-3-pro-preview")
     # Uso st.selectbox (non st.sidebar) e aggiungo una key univoca
@@ -223,14 +224,15 @@ with tab_view_edit:
 
     filtered_ids = []
     
+    # Controllo la chiave corretta per visualizzare il messaggio corretto
     if search_query:
-        if "GEMINI_API_KEY" in st.secrets:
+        if "GOOGLE_API_KEY" in st.secrets:
             # Chiamata alla funzione Gemini (Ricerca Semantica)
             gemini_results = search_formats_with_gemini(search_query, df, product_id_col_name)
         else:
             # Fallback a ricerca testuale se la chiave Gemini non è disponibile
             gemini_results = []
-            st.info("Ricerca testuale classica in uso (chiave Gemini non trovata).")
+            st.info("Ricerca testuale classica in uso (chiave Google API non trovata).")
             
         
         if gemini_results:
@@ -364,7 +366,7 @@ with tab_pdf_ppt:
     st.markdown("""
         Per proseguire con l'automazione, dovremo:
         1.  **Installare le librerie** per la lettura dei documenti (`pypdf`, `python-pptx`).
-        2.  Usare la chiave **Gemini API Key** già configurata.
+        2.  Usare la chiave **Google API Key** già configurata.
         3.  Implementare la logica di estrazione AI in questa sezione.
     """)
     
