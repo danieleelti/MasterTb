@@ -3,3 +3,5 @@ gspread
 pandas
 tabulate
 google-generativeai
+pypdf
+python-pptx
