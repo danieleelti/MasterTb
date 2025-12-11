@@ -59,6 +59,13 @@ st.markdown("""
     }
     .old-val { background-color: #ffe6e6; color: #b30000; text-decoration: line-through; padding: 2px 5px; border-radius: 3px;}
     .new-val { background-color: #e6fffa; color: #006644; font-weight: bold; padding: 2px 5px; border-radius: 3px;}
+    
+    /* Stile per l'area editabile verde */
+    .stTextArea textarea[aria-label="Modifica Nuova Descrizione"] {
+        background-color: #e6fffa;
+        border: 2px solid #006644;
+        color: #004d33;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -258,7 +265,6 @@ uploaded_file = st.file_uploader("📂 Trascina qui PDF o PPTX per Analizzare/Cr
 
 # --- LOGICA AUTO-ANALISI ---
 if uploaded_file:
-    # Identificativo univoco del file per evitare loop
     file_id = f"{uploaded_file.name}_{uploaded_file.size}"
     
     if st.session_state['last_processed_file'] != file_id:
@@ -304,39 +310,48 @@ if uploaded_file:
             else:
                 st.error("Testo insufficiente nel file.")
             
-            # Segna come processato
             st.session_state['last_processed_file'] = file_id
 
-# BOX AGGIORNAMENTO DUPLICATI
+# BOX AGGIORNAMENTO DUPLICATI CON EDITING
 if st.session_state['pending_duplicate']:
     st.divider()
     dup_data = st.session_state['pending_duplicate']
     dup_id = dup_data['id']
     target_col = dup_data.get('target_col', "Descrizione Breve")
-    new_val = dup_data.get('new_value', "")
+    new_val_ai = dup_data.get('new_value', "")
     old_val = dup_data.get('old_value', "")
 
     st.warning(f"⚠️ **ATTENZIONE:** Il format **'{dup_id}'** esiste già!")
-    st.markdown(f"**L'AI propone di aggiornare SOLO la colonna '{target_col}'**.")
+    st.markdown(f"**L'AI propone di aggiornare SOLO la colonna '{target_col}'**. Puoi modificare il testo verde prima di confermare.")
     
     col_diff1, col_diff2 = st.columns(2)
     with col_diff1:
         st.caption("🔴 Descrizione Attuale")
         st.info(old_val if old_val else "(Vuoto)", icon="ℹ️")
     with col_diff2:
-        st.caption("🟢 Nuova Descrizione (AI)")
-        st.success(new_val, icon="✨")
+        st.caption("🟢 Nuova Descrizione (AI - Modificabile)")
+        # QUI LA MODIFICA: TEXT_AREA AL POSTO DI SUCCESS
+        edited_new_desc = st.text_area(
+            "Modifica Nuova Descrizione", 
+            value=new_val_ai, 
+            height=200, 
+            key="edit_dup_desc",
+            label_visibility="collapsed"
+        )
 
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🔄 AGGIORNA SOLO DESCRIZIONE", type="primary"):
+        if st.button("🔄 AGGIORNA DESCRIZIONE", type="primary"):
             try:
                 r_idx = product_ids.index(dup_id) + 2 
                 c_idx = cols.index(target_col) + 2
-                ws.update_cell(r_idx, c_idx, new_val)
-                st.toast("Aggiornato!", icon="✅")
+                
+                # USIAMO IL VALORE EDITATO DALLA TEXTAREA
+                ws.update_cell(r_idx, c_idx, edited_new_desc)
+                
+                st.toast("Aggiornato con successo!", icon="✅")
                 st.session_state['pending_duplicate'] = None
-                st.session_state['last_processed_file'] = None # Reset per permettere ricaricamento
+                st.session_state['last_processed_file'] = None 
                 load_data.clear()
                 st.rerun()
             except Exception as e: st.error(f"Errore: {e}")
@@ -370,9 +385,11 @@ if st.session_state['search_results'] is not None:
         st.session_state['search_results'] = None
         st.session_state['pending_changes'] = None
         st.rerun()
-    options = [""] + options # Aggiunge opzione vuota
+    # Ordiniamo anche i risultati della ricerca per comodità
+    options = [""] + sorted(options)
 else:
-    options = [""] + product_ids # Aggiunge opzione vuota a tutti
+    # QUI LA MODIFICA: ORDINIAMO LA LISTA PER PERMETTERE LA RICERCA VELOCE DA TASTIERA
+    options = [""] + sorted(product_ids)
 
 # 3. SELEZIONE
 is_new_mode = False
@@ -385,8 +402,9 @@ if st.session_state['draft_data'] and not st.session_state['pending_duplicate']:
         st.session_state['last_processed_file'] = None
         st.rerun()
 else:
-    # IL SELECTBOX ORA PARTE VUOTO ("") GRAZIE ALLA PRIMA OPZIONE
-    selected_id = st.selectbox("Seleziona Format da Modificare", options, index=0)
+    # Selectbox ora usa 'options' che è ordinato alfabeticamente
+    # Scrivendo dentro il box, Streamlit filtrerà automaticamente
+    selected_id = st.selectbox("Seleziona Format da Modificare (Scrivi per cercare)", options, index=0)
 
 # 4. LOGICA "FOGLIO BIANCO"
 if not is_new_mode and not selected_id:
@@ -401,7 +419,6 @@ if is_new_mode:
     source_data = st.session_state['draft_data']
     current_id_val = str(source_data.get(id_col, ""))
     submit_label = "🧐 VERIFICA DATI (Step 1/2)"
-    # Se nuovo, non c'è confronto con vecchio DB
 else:
     source_data = df.loc[selected_id].to_dict()
     current_id_val = selected_id
@@ -424,7 +441,6 @@ with st.form("master_form"):
         if "[[RIEMPIMENTO MANUALE]]" in val: val = ""
         
         # Logica widget specifici
-        # SOCIAL & NOVITÀ
         if "social" in c_lower or "novità" in c_lower or "novita" in c_lower:
             options_bool = ["NO", "SI"]
             idx_bool = 1 if ("si" in val.lower() or "yes" in val.lower()) else 0
@@ -460,10 +476,8 @@ with st.form("master_form"):
         changes = {}
         # CALCOLO DIFFERENZE
         if is_new_mode:
-            # Per nuovi, tutto è "cambiamento" rispetto al nulla
             changes = {'_NEW_': True, 'id': new_id, 'data': form_values}
         else:
-            # Per esistenti, confronto con source_data
             for k, v in form_values.items():
                 original = str(source_data.get(k, ""))
                 if v != original:
