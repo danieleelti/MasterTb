@@ -1,6 +1,5 @@
 streamlit
-google-genai
 gspread
-oauth2client
-pytz
+pandas
 tabulate
+google-genai[types]
