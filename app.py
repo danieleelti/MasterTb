@@ -5,6 +5,7 @@ import json
 import re
 from google import genai
 from google.genai import types
+import ast
 
 # --- 1. LOGICA DI ACCESSO TRAMITE PASSWORD ---
 
@@ -125,36 +126,28 @@ def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_i
     Restituisce una lista di nomi di formati pertinenti.
     """
     try:
-        # --- MODIFICA RICHIESTA (Chiave API): Usa GOOGLE_API_KEY come nei secrets ---
         if "GOOGLE_API_KEY" not in st.secrets:
-            # Fallback se la chiave AI non è configurata
             return [] 
             
-        # 1. Inizializza il client Gemini
-        client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"]) # Usa GOOGLE_API_KEY
-
-        # 2. Prepara il contesto dei dati (converti il DataFrame in stringa)
+        client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
         catalogue_string = catalogue_df.to_markdown(index=True)
 
-        # 3. Costruisci il prompt
         prompt = f"""
         Sei un assistente di ricerca specializzato in format di team building. 
-        Analizza la 'QUERY UTENTE' e restituisci i nomi esatti dei format più rilevanti 
-        all'interno del 'CATALOGO PRODOTTI' fornito. 
+        Analizza la 'QUERY UTENTE' e restituisci i nomi esatti dei format più rilevanti. 
         
         ISTRUZIONI:
-        1. Considera solo i valori della colonna '{product_id_col_name}' come output.
-        2. L'output deve essere SOLO E SOLTANTO una lista Python di stringhe, ad esempio: ['Format A', 'Format B', 'Format C']. 
-        3. Se non trovi nulla, restituisci una lista vuota: [].
+        1. DEVI leggere TUTTE le colonne del 'CATALOGO PRODOTTI' (Descrizione Breve, Tipologia, Vibe / Emozione, ecc.) per trovare corrispondenze semantiche.
+        2. Considera solo i valori della colonna '{product_id_col_name}' come output.
+        3. L'output deve essere SOLO E SOLTANTO una lista Python di stringhe, ad esempio: ['Format A', 'Format B', 'Format C']. 
+        4. Se non trovi nulla, restituisci una lista vuota: [].
 
         QUERY UTENTE: "{query}"
 
         CATALOGO PRODOTTI:
         {catalogue_string}
-        """
+        """ # <--- PROMPT MIGLIORATO
 
-        # 4. Chiama l'API
-        # Usa il modello selezionato dalla session state
         response = client.models.generate_content(
             model=st.session_state['selected_ai_model'], 
             contents=prompt,
@@ -163,21 +156,29 @@ def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_i
             )
         )
         
-        # 5. Processa la risposta (deve essere una lista Python)
-        import ast
-        raw_text = response.text.strip().replace('`', '').replace('python', '').replace('json', '')
+        raw_text = response.text.strip()
         
+        # LOGICA DI PARSING ROBUSTA
+        match = re.search(r"(\[.*\])", raw_text, re.DOTALL)
+        
+        if match:
+            list_string = match.group(1)
+        else:
+            list_string = raw_text 
+            
         try:
-            result_list = ast.literal_eval(raw_text)
+            result_list = ast.literal_eval(list_string)
             if isinstance(result_list, list) and all(isinstance(item, str) for item in result_list):
                 return result_list
             else:
+                st.warning(f"❌ L'AI ha restituito un formato non valido. Output grezzo AI: `{raw_text}`")
                 return []
         except:
+            st.warning(f"❌ Errore di parsing del risultato AI. L'AI ha restituito: `{raw_text}`")
             return []
 
     except Exception as e:
-        # In caso di errore API, ritorna una lista vuota
+        st.error(f"Errore durante la chiamata a Gemini: {e}")
         return []
 
 
@@ -210,7 +211,6 @@ with tab_view_edit:
     # --- POSIZIONE DELLA CONFIGURAZIONE AI ---
     model_options = ["gemini-3-pro-preview", "gemini-2.0-flash-exp", "gemini-1.5-pro-latest", "gemini-1.5-flash"]
     if "gemini-3-pro-preview" not in model_options: model_options.insert(0, "gemini-3-pro-preview")
-    # Uso st.selectbox (non st.sidebar) e aggiungo una key univoca
     selected_model_name = st.selectbox("Modello Google", model_options, key="model_selector_main_tab") 
     st.session_state['selected_ai_model'] = selected_model_name 
     st.markdown("---")
@@ -224,13 +224,11 @@ with tab_view_edit:
 
     filtered_ids = []
     
-    # Controllo la chiave corretta per visualizzare il messaggio corretto
     if search_query:
         if "GOOGLE_API_KEY" in st.secrets:
             # Chiamata alla funzione Gemini (Ricerca Semantica)
             gemini_results = search_formats_with_gemini(search_query, df, product_id_col_name)
         else:
-            # Fallback a ricerca testuale se la chiave Gemini non è disponibile
             gemini_results = []
             st.info("Ricerca testuale classica in uso (chiave Google API non trovata).")
             
@@ -238,11 +236,15 @@ with tab_view_edit:
         if gemini_results:
             # Filtra solo gli ID che esistono effettivamente nel catalogo (per sicurezza)
             filtered_ids = [id for id in gemini_results if id in product_ids]
-        else:
+            
+            if not filtered_ids and gemini_results:
+                 st.warning(f"L'AI ha identificato i seguenti format: {', '.join(gemini_results)}, ma non sono stati trovati nel catalogo (problema di corrispondenza esatta dei nomi).")
+        
+        if not gemini_results:
             # Fallback alla ricerca testuale standard se l'AI non trova nulla
             filtered_ids = [id for id in product_ids if search_query.lower() in id.lower()]
             
-            if not gemini_results and filtered_ids:
+            if filtered_ids:
                  st.info("Ricerca semantica non riuscita, mostra risultati per corrispondenza testuale.")
 
             
