@@ -145,11 +145,19 @@ with tab_view_edit:
             for column in column_names:
                 current_value = str(product_data[column]) if pd.notna(product_data[column]) else ""
                 
+                # --- INIZIO MODIFICA RICHIESTA: Rende la chiave dinamica includendo l'ID ---
+                dynamic_key = f"edit_{selected_product_id}_{column}"
+                
                 # Usa text_area per campi potenzialmente lunghi
                 if len(current_value) > 80 or '\n' in current_value or column not in ['Max Pax', 'Durata Min', 'Durata Max']:
-                    new_value = st.text_area(f"**{column}**", value=current_value, key=f"edit_{column}")
+                    new_value = st.text_area(f"**{column}**", 
+                                             value=current_value, 
+                                             key=dynamic_key)
                 else:
-                    new_value = st.text_input(f"**{column}**", value=current_value, key=f"edit_{column}")
+                    new_value = st.text_input(f"**{column}**", 
+                                              value=current_value, 
+                                              key=dynamic_key)
+                # --- FINE MODIFICA RICHIESTA ---
                     
                 new_values[column] = new_value
 
@@ -178,7 +186,7 @@ with tab_view_edit:
                     st.balloons()
                     # Forza la ricarica dei dati (svuota la cache) e ricarica l'app
                     get_all_records.clear()
-                    st.rerun() # <--- CORREZIONE 1: st.rerun()
+                    st.rerun() 
             
 
 # --- TAB 2: Aggiungi Nuovo Formato ---
@@ -215,7 +223,7 @@ with tab_add_format:
                     st.balloons()
                     # Pulisci la cache e ricarica l'app
                     get_all_records.clear()
-                    st.rerun() # <--- CORREZIONE 2: st.rerun()
+                    st.rerun() 
                 else:
                     st.error(message)
 
