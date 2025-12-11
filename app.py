@@ -10,9 +10,9 @@ from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import pypdf
 from pptx import Presentation
 
-# --- CONFIGURAZIONE MODELLI ---
-SEARCH_MODEL = "models/gemini-2.5-flash-lite" # Per la ricerca veloce (Default)
-DOC_MODEL = "models/gemini-3-pro-preview"     # Per analisi documenti (Obbligatorio)
+# --- CONFIGURAZIONE ---
+SEARCH_MODEL = "models/gemini-2.5-flash-lite"
+DOC_MODEL = "models/gemini-3-pro-preview"
 
 # --- INIZIALIZZAZIONE STATO ---
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
@@ -22,9 +22,11 @@ if 'available_models' not in st.session_state:
     st.session_state['available_models'] = [SEARCH_MODEL]
 if 'search_results' not in st.session_state:
     st.session_state['search_results'] = None
-# Stato per i dati bozza del nuovo format
 if 'draft_data' not in st.session_state:
     st.session_state['draft_data'] = {}
+# Stato per gestire il conflitto duplicati
+if 'pending_duplicate' not in st.session_state:
+    st.session_state['pending_duplicate'] = None
 
 # --- 1. LOGIN ---
 if not st.session_state['logged_in']:
@@ -91,23 +93,19 @@ def analyze_document_with_gemini(text_content, columns):
     if "GOOGLE_API_KEY" not in st.secrets: return None
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 
-    # Prompt rigoroso per l'analisi documentale
     sys_prompt = f"""
-    Sei un esperto data entry per format di team building. 
-    Analizza il testo fornito e estrai i dati per compilare le seguenti colonne:
+    Sei un esperto data entry. Estrai dati dal documento per queste colonne:
     {json.dumps(columns)}
     
-    Il campo '{columns[0]}' è il NOME DEL FORMAT.
+    Campo chiave: '{columns[0]}' (NOME FORMAT).
     
-    REGOLE FONDAMENTALI:
-    1. Se trovi l'informazione nel testo, inseriscila.
-    2. Se l'informazione NON è presente o non sei sicuro, scrivi ESATTAMENTE: "[[RIEMPIMENTO MANUALE]]".
-    3. Non inventare nulla.
+    REGOLE:
+    1. Se il dato manca, scrivi ESATTAMENTE: "[[RIEMPIMENTO MANUALE]]".
+    2. Non inventare.
     
-    OUTPUT: Un oggetto JSON valido.
+    OUTPUT: JSON valido.
     """
 
-    # Usa FORZATAMENTE il modello 3.0 Pro Preview per l'analisi
     model = genai.GenerativeModel(
         model_name=DOC_MODEL,
         generation_config={"temperature": 0.1, "response_mime_type": "application/json"},
@@ -115,7 +113,7 @@ def analyze_document_with_gemini(text_content, columns):
     )
 
     try:
-        response = model.generate_content(f"DOCUMENTO DA ANALIZZARE:\n{text_content}")
+        response = model.generate_content(f"DOCUMENTO:\n{text_content}")
         return json.loads(response.text)
     except Exception as e:
         st.error(f"Errore Analisi AI ({DOC_MODEL}): {e}")
@@ -128,8 +126,8 @@ def search_ai(query, dataframe, model_name):
     context_str = dataframe.to_markdown(index=True)
 
     sys_prompt = """
-    Sei un assistente di ricerca. Analizza L'INTERO CATALOGO fornito.
-    Output: SOLO lista Python di stringhe (Nomi Format). Es: ['Format A', 'Format B'].
+    Sei un assistente di ricerca. Analizza il catalogo.
+    Output: SOLO lista Python di stringhe (Nomi Format). Es: ['Format A'].
     Se nulla corrisponde: [].
     """
     
@@ -156,13 +154,11 @@ with st.sidebar:
     st.header("🔢 Token")
     st.metric("Totale Sessione", st.session_state['token_usage']['total'])
 
-# TAB UNICI
 tab1, tab2 = st.tabs(["👁️ Cerca & Modifica", "➕ Nuovo Format (AI & Manuale)"])
 
 # --- TAB 1: RICERCA ---
 with tab1:
     col_scan, col_sel = st.columns([1, 3])
-    
     with col_scan:
         if st.button("🔍 Scansiona Modelli"):
             if "GOOGLE_API_KEY" in st.secrets:
@@ -171,8 +167,8 @@ with tab1:
                     models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
                     if models:
                         st.session_state['available_models'] = models
-                        st.toast(f"Trovati {len(models)} modelli!", icon="✅")
-                except Exception as e: st.error(f"Errore Scan: {e}")
+                        st.toast(f"Trovati {len(models)}!", icon="✅")
+                except Exception as e: st.error(f"Scan Error: {e}")
     
     with col_sel:
         idx_def = 0
@@ -183,7 +179,7 @@ with tab1:
     st.divider()
 
     with st.form("search_ai"):
-        q = st.text_input(f"Cerca {id_col}", placeholder="es. attività outdoor, 50 pax")
+        q = st.text_input(f"Cerca {id_col}", placeholder="es. attività outdoor")
         btn = st.form_submit_button("Cerca")
     
     if btn and q:
@@ -228,53 +224,94 @@ with tab1:
                 load_data.clear()
                 st.rerun()
 
-# --- TAB 2: NUOVO FORMAT (AI INTEGRATA) ---
+# --- TAB 2: NUOVO FORMAT ---
 with tab2:
-    st.markdown("### 1. Carica Documento (Opzionale)")
-    st.info(f"L'analisi documentale userà obbligatoriamente il modello: **{DOC_MODEL}**")
+    st.markdown("### 1. Carica Documento")
+    st.info(f"Analisi con: **{DOC_MODEL}**")
     
-    uploaded_file = st.file_uploader("Trascina qui PDF o PPTX per autocompilare", type=['pdf', 'pptx', 'ppt'])
+    uploaded_file = st.file_uploader("Trascina qui PDF o PPTX", type=['pdf', 'pptx', 'ppt'])
     
     if uploaded_file:
-        if st.button("⚡ Estrai Dati con AI"):
-            with st.spinner("Analisi in corso (potrebbe richiedere 30-60 secondi)..."):
+        if st.button("⚡ Estrai Dati"):
+            with st.spinner("Analisi in corso..."):
                 raw_text = read_file_content(uploaded_file)
                 if len(raw_text) > 10:
                     extracted = analyze_document_with_gemini(raw_text, [id_col] + cols)
                     if extracted:
                         st.session_state['draft_data'] = extracted
-                        st.success("Dati estratti! Verifica i campi rossi qui sotto.")
+                        st.session_state['pending_duplicate'] = None # Reset pending
+                        st.success("Dati estratti!")
                     else:
-                        st.error("L'AI non ha restituito dati validi.")
+                        st.error("Errore analisi AI.")
                 else:
-                    st.error("Testo insufficiente nel file.")
+                    st.error("Testo insufficiente.")
 
     st.divider()
     st.markdown("### 2. Dettagli Format")
     
+    # Se c'è una decisione in sospeso (Duplicato trovato), mostriamo i bottoni di scelta
+    if st.session_state['pending_duplicate']:
+        dup_data = st.session_state['pending_duplicate']
+        dup_id = dup_data['id']
+        st.warning(f"⚠️ **ATTENZIONE:** Il format **'{dup_id}'** esiste già nel database!")
+        
+        c1, c2, c3 = st.columns(3)
+        
+        with c1:
+            if st.button("🔄 AGGIORNA ESISTENTE"):
+                try:
+                    r_idx = product_ids.index(dup_id) + 2
+                    # Aggiorna tutte le colonne
+                    for i, col in enumerate(cols):
+                        val = dup_data['values'][col]
+                        ws.update_cell(r_idx, i + 2, val)
+                    st.success(f"Format '{dup_id}' aggiornato!")
+                    st.session_state['pending_duplicate'] = None
+                    st.session_state['draft_data'] = {}
+                    load_data.clear()
+                    st.rerun()
+                except Exception as e: st.error(f"Errore: {e}")
+
+        with c2:
+            if st.button("➕ SALVA COME NUOVO"):
+                try:
+                    # Crea nuovo ID univoco
+                    new_unique_id = f"{dup_id} (Copia)"
+                    row_to_append = [new_unique_id] + [dup_data['values'][c] for c in cols]
+                    ws.append_row(row_to_append)
+                    st.success(f"Creato come '{new_unique_id}'!")
+                    st.session_state['pending_duplicate'] = None
+                    st.session_state['draft_data'] = {}
+                    load_data.clear()
+                    st.rerun()
+                except Exception as e: st.error(f"Errore: {e}")
+        
+        with c3:
+            if st.button("❌ ANNULLA"):
+                st.session_state['pending_duplicate'] = None
+                st.rerun()
+                
+        st.divider()
+
     # Form principale
     with st.form("add_new_format_form"):
         form_values = {}
         missing_fields = []
         
-        # Gestione ID (Nome Format)
         id_val = st.session_state['draft_data'].get(id_col, "")
         if id_val == "[[RIEMPIMENTO MANUALE]]":
-            st.markdown(f":red[**⚠️ {id_col} MANCANTE - INSERIRE MANUALMENTE**]")
-            id_val = "" # Pulisci per l'input
+            st.markdown(f":red[**⚠️ {id_col} MANCANTE**]")
+            id_val = ""
             missing_fields.append(id_col)
             
         new_id = st.text_input(f"**{id_col} (UNICO)** *", value=id_val)
         
-        # Gestione Altre Colonne
         for c in cols:
             val = st.session_state['draft_data'].get(c, "")
-            
-            # Controllo "Riempimento Manuale"
             if "[[RIEMPIMENTO MANUALE]]" in str(val):
-                st.markdown(f":red[**⚠️ {c} MANCANTE - COMPLETARE**]")
-                val = "" # Pulisci il campo per facilitare l'inserimento
-                missing_fields.append(c) # Segna come bloccante
+                st.markdown(f":red[**⚠️ {c} MANCANTE**]")
+                val = ""
+                missing_fields.append(c)
             
             if len(str(val)) > 50:
                 form_values[c] = st.text_area(f"**{c}**", value=val)
@@ -284,40 +321,38 @@ with tab2:
         submitted = st.form_submit_button("💾 Salva Nuovo Format")
         
         if submitted:
-            # 1. Validazione Campi Vuoti o Non Validi
             errors = []
-            if not new_id.strip():
-                errors.append(f"Il campo '{id_col}' è obbligatorio.")
+            if not new_id.strip(): errors.append(f"Manca {id_col}")
             
-            # Controllo se l'utente ha lasciato campi vuoti che erano segnati come manuali
-            # (Opzionale: se vuoi bloccare il salvataggio se un campo è vuoto in assoluto)
-            for c, v in form_values.items():
-                if not str(v).strip():
-                     # Qui decidi: vuoi obbligare a riempire TUTTO?
-                     # Se sì, uncommenta la riga sotto. Altrimenti lascia passare i vuoti.
-                     errors.append(f"Il campo '{c}' è vuoto.") 
-                     pass
-
-            # 2. Controllo Duplicati
-            if new_id in product_ids:
-                errors.append(f"Il format '{new_id}' esiste già nel database.")
+            # Controllo manuale obbligatorio
+            if missing_fields:
+                errors.append(f"Compila i campi mancanti: {', '.join(missing_fields)}")
+            
+            # Controllo se i campi sono vuoti nel form finale (opzionale, ma consigliato)
+            for k, v in form_values.items():
+                if str(v).strip() == "":
+                     # Qui decidi se bloccare il salvataggio per OGNI campo vuoto
+                     pass 
 
             if errors:
                 for e in errors: st.error(e)
-                st.error("❌ Salvataggio bloccato. Correggi gli errori sopra.")
             else:
-                try:
-                    # Preparazione riga
-                    row_to_append = [new_id] + [form_values[c] for c in cols]
-                    ws.append_row(row_to_append)
-                    
-                    st.success(f"✅ Format '{new_id}' salvato con successo!")
-                    st.balloons()
-                    
-                    # Pulizia
-                    st.session_state['draft_data'] = {}
-                    load_data.clear()
-                    # Non possiamo fare rerun dentro il form submit in modo pulito senza perdere lo stato del successo, 
-                    # ma il reload dei dati è fatto.
-                except Exception as e:
-                    st.error(f"Errore durante il salvataggio su Google Sheets: {e}")
+                # Controlla duplicato PRIMA di salvare
+                if new_id in product_ids:
+                    # Salva stato e ricarica per mostrare i bottoni di scelta
+                    st.session_state['pending_duplicate'] = {
+                        'id': new_id,
+                        'values': form_values
+                    }
+                    st.rerun()
+                else:
+                    # Salva diretto
+                    try:
+                        row_to_append = [new_id] + [form_values[c] for c in cols]
+                        ws.append_row(row_to_append)
+                        st.success(f"✅ Format '{new_id}' salvato!")
+                        st.session_state['draft_data'] = {}
+                        load_data.clear()
+                        # Non facciamo rerun qui per lasciare il messaggio di successo visibile
+                    except Exception as e:
+                        st.error(f"Errore salvataggio: {e}")
