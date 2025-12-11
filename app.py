@@ -5,37 +5,26 @@ import json
 import re
 
 # --- Variabile Globale per la Connessione ---
-# La variabile che conterrà il nostro oggetto Worksheet (inizializzata più avanti)
 ws = None 
 
 # --- Configurazione e Connessione a Google Sheets ---
 
-# @st.cache_resource mantiene la risorsa (la connessione) attiva tra le esecuzioni.
 @st.cache_resource
 def connect_to_sheet():
     """Stabilisce la connessione con Google Sheets tramite le credenziali."""
     try:
-        # Carica le credenziali dai secrets di Streamlit (gcp_service_account)
         credentials_json = st.secrets["gcp_service_account"]
-        
-        # Connessione
         gc = gspread.service_account_from_dict(credentials_json)
-        
-        # Apri il foglio di lavoro (Spreadsheet)
         spreadsheet_name = "MasterTbGoogleAi"
         st.caption(f"Tentativo di connessione al file: **{spreadsheet_name}**")
         sh = gc.open(spreadsheet_name)
-        
-        # Accesso al primo foglio di lavoro (Worksheet)
         worksheet = sh.get_worksheet(0) 
-        
         return worksheet
     except Exception as e:
         st.error(f"❌ Errore di connessione a Google Sheets. Dettagli: {e}")
         st.stop()
 
 # --- Inizializzazione della Connessione (Risorsa) ---
-# Chiamata all'avvio dell'app per inizializzare la risorsa 'ws'
 try:
     ws = connect_to_sheet()
 except st.runtime.scriptrunner.StopException:
@@ -43,13 +32,10 @@ except st.runtime.scriptrunner.StopException:
 
 # --- Funzioni di Interazione con Google Sheets ---
 
-# @st.cache_data memorizza i dati (il DataFrame) per un accesso rapido.
-# Non accetta parametri non hashable.
 @st.cache_data(ttl=60) 
 def get_all_records():
     """Recupera tutti i record dal foglio di lavoro usando la connessione globale 'ws'."""
     try:
-        # Usa la variabile globale 'ws' che è l'oggetto gspread.Worksheet
         data = ws.get_all_records()
         df = pd.DataFrame(data)
         
@@ -95,7 +81,6 @@ def update_cell(product_id, column_name, new_value):
 def add_new_row(new_data):
     """Aggiunge una nuova riga al foglio di lavoro."""
     try:
-        # Inserisce la riga alla fine del foglio
         ws.insert_row(new_data, index=len(ws.col_values(1)) + 1)
         return True, "Nuovo formato aggiunto con successo!"
     except Exception as e:
@@ -103,7 +88,7 @@ def add_new_row(new_data):
 
 # --- Interfaccia Utente Streamlit ---
 
-st.title("🦁 MasterTb 🦁") # <--- MODIFICA RICHIESTA QUI
+st.title("🦁 MasterTb 🦁")
 
 
 # Carica i dati
@@ -128,11 +113,34 @@ tab_view_edit, tab_add_format, tab_pdf_ppt = st.tabs([
 with tab_view_edit:
     st.header("Visualizza e Modifica un Formato Esistente")
     
-    selected_product_id = st.selectbox(
-        f"Seleziona il **{product_id_col_name}**:",
-        options=product_ids
+    # 1. Campo di testo per la ricerca (AI-based Filtering)
+    search_query = st.text_input(
+        f"Cerca per **{product_id_col_name}**:", 
+        placeholder="Digita parte del nome del formato...",
+        key="search_format_input"
     )
 
+    # 2. Logica di filtraggio
+    if search_query:
+        # Filtra gli ID che contengono la query (case-insensitive)
+        filtered_ids = [id for id in product_ids if search_query.lower() in id.lower()]
+    else:
+        # Se la ricerca è vuota, mostra tutti gli ID
+        filtered_ids = product_ids
+        
+    # Se non ci sono risultati, offriamo una selezione vuota
+    if not filtered_ids:
+        st.warning("Nessun formato trovato con questa ricerca.")
+        # Impostiamo l'ID selezionato su None per evitare errori
+        selected_product_id = None
+    else:
+        # 3. Selectbox con i risultati filtrati
+        selected_product_id = st.selectbox(
+            f"Seleziona il **{product_id_col_name}** dai risultati:",
+            options=filtered_ids
+        )
+
+    # --- Mostra e Modifica i dettagli ---
     if selected_product_id:
         st.subheader(f"Dettagli di: **{selected_product_id}**")
         product_data = df.loc[selected_product_id]
@@ -183,7 +191,6 @@ with tab_view_edit:
                     st.warning("Nessuna modifica rilevata. Niente da salvare.")
                 else:
                     st.balloons()
-                    # Forza la ricarica dei dati (svuota la cache) e ricarica l'app
                     get_all_records.clear()
                     st.rerun() 
             
@@ -205,14 +212,12 @@ with tab_add_format:
         submitted_add = st.form_submit_button("Aggiungi Riga/Formato 🚀")
         
         if submitted_add:
-            # Valida che l'ID/Nome Formato sia compilato
             first_col_val = new_row_data[product_id_col_name].strip()
             if not first_col_val:
                 st.error(f"Il campo **{product_id_col_name}** è obbligatorio.")
             elif first_col_val in product_ids:
                 st.error(f"Il **{product_id_col_name}** '{first_col_val}' esiste già.")
             else:
-                # Prepara la lista di valori da inserire (nell'ordine delle colonne)
                 values_to_insert = [new_row_data[col] for col in column_names]
                 
                 success, message = add_new_row(values_to_insert)
@@ -220,7 +225,6 @@ with tab_add_format:
                 if success:
                     st.success(message)
                     st.balloons()
-                    # Pulisci la cache e ricarica l'app
                     get_all_records.clear()
                     st.rerun() 
                 else:
