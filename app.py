@@ -63,6 +63,8 @@ if 'search_results' not in st.session_state:
     st.session_state['search_results'] = None
 if 'pending_duplicate' not in st.session_state:
     st.session_state['pending_duplicate'] = None
+
+# FIX CRITICO: Inizializzazione sicura di draft_data
 if 'draft_data' not in st.session_state:
     st.session_state['draft_data'] = {}
 elif st.session_state['draft_data'] is None:
@@ -114,30 +116,22 @@ product_ids = [str(i) for i in df.index.tolist()]
 cols = df.columns.tolist()
 id_col = df.index.name
 
-# --- HELPER LETTURA FILE AVANZATO ---
+# --- HELPER LETTURA FILE AVANZATO (PPTX Recursion) ---
 def get_shape_text_recursive(shape):
-    """Estrae testo da forme, gruppi e tabelle in modo ricorsivo."""
     text = ""
     try:
-        # 1. Testo diretto
         if hasattr(shape, "has_text_frame") and shape.has_text_frame:
             text += shape.text_frame.text + "\n"
-        
-        # 2. Tabelle
         if hasattr(shape, "has_table") and shape.has_table:
             for row in shape.table.rows:
                 for cell in row.cells:
                     if hasattr(cell, "text_frame"):
                         text += cell.text_frame.text + " "
             text += "\n"
-
-        # 3. Gruppi (Recursion)
         if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
             for child in shape.shapes:
                 text += get_shape_text_recursive(child)
-                
-    except Exception:
-        pass # Ignora errori su forme esotiche
+    except: pass
     return text
 
 def read_file_content(uploaded_file):
@@ -148,7 +142,6 @@ def read_file_content(uploaded_file):
             for page in pdf_reader.pages:
                 extracted = page.extract_text()
                 if extracted: text += extracted + "\n"
-                
         elif uploaded_file.name.endswith('.pptx') or uploaded_file.name.endswith('.ppt'):
             prs = Presentation(uploaded_file)
             for slide in prs.slides:
@@ -164,18 +157,17 @@ def analyze_document_with_gemini(text_content, columns):
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 
     sys_prompt = f"""
-    Sei un esperto data entry. Analizza il testo fornito ed estrai i dati per compilare le colonne richieste.
+    Sei un esperto data entry. Analizza il testo del documento.
     
-    COLONNE OBBLIGATORIE (Chiavi JSON esatte):
+    OBIETTIVO: Compilare un JSON con queste chiavi esatte:
     {json.dumps(columns)}
     
-    Campo chiave: '{columns[0]}' (NOME FORMAT).
+    Il campo '{columns[0]}' è il NOME DEL FORMAT. Cercalo nel titolo.
     
     REGOLE:
-    1. Cerca attentamente nel testo. Spesso il Nome Format è il titolo.
-    2. Se trovi il dato, inseriscilo.
-    3. Se il dato NON c'è, scrivi: "[[RIEMPIMENTO MANUALE]]".
-    4. Rispondi SOLO con un JSON valido piatto.
+    1. Se trovi l'informazione, scrivila.
+    2. Se l'informazione MANCA, scrivi ESATTAMENTE: "[[RIEMPIMENTO MANUALE]]".
+    3. Rispondi SOLO con il JSON. Niente markdown, niente commenti.
     """
 
     model = genai.GenerativeModel(
@@ -186,18 +178,16 @@ def analyze_document_with_gemini(text_content, columns):
 
     try:
         response = model.generate_content(f"TESTO DOCUMENTO:\n{text_content}")
-        # Pulizia JSON
         clean_text = response.text.strip()
+        # Rimuove markdown JSON se presente
         if clean_text.startswith("```json"): clean_text = clean_text[7:]
         if clean_text.endswith("```"): clean_text = clean_text[:-3]
         
-        # Salvataggio per Debug
-        st.session_state['debug_ai_response'] = clean_text
-        
+        st.session_state['debug_ai_response'] = clean_text # Salva per debug
         return json.loads(clean_text.strip())
     except Exception as e:
-        st.error(f"Errore Analisi AI ({DOC_MODEL}): {e}")
-        st.session_state['debug_ai_response'] = f"ERRORE: {str(e)}"
+        st.error(f"Errore AI ({DOC_MODEL}): {e}")
+        st.session_state['debug_ai_response'] = str(e)
         return {}
 
 def search_ai(query, dataframe, model_name):
@@ -205,8 +195,7 @@ def search_ai(query, dataframe, model_name):
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     
     context_str = dataframe.to_markdown(index=True)
-
-    sys_prompt = "Sei un assistente di ricerca. Output: SOLO lista Python stringhe Nomi Format. Es: ['Nome A']."
+    sys_prompt = "Sei un assistente di ricerca. Output: SOLO lista Python Nomi Format. Es: ['Nome A']."
     
     model = genai.GenerativeModel(model_name=model_name, generation_config={"temperature": 0.0}, system_instruction=sys_prompt)
     try:
@@ -306,21 +295,23 @@ with tab2:
         if st.button("⚡ Estrai Dati"):
             with st.spinner("Analisi in corso..."):
                 raw_text = read_file_content(uploaded_file)
-                st.session_state['debug_raw_text'] = raw_text # Save raw text
+                st.session_state['debug_raw_text'] = raw_text # Salva per debug
                 
                 if len(raw_text) > 10:
                     extracted = analyze_document_with_gemini(raw_text, [id_col] + cols)
-                    st.session_state['draft_data'] = extracted if extracted else {}
+                    # FIX: Assegniamo un dict vuoto se l'estrazione fallisce (evita None)
+                    st.session_state['draft_data'] = extracted if extracted is not None else {}
                     st.session_state['pending_duplicate'] = None 
                     
                     if st.session_state['draft_data']:
                         st.success("Dati estratti!")
                     else:
                         st.error("L'AI non ha estratto dati validi.")
+                    # RIMOSSO st.rerun() per evitare salto pagina
                 else:
-                    st.error("Testo insufficiente (Forse il PPTX ha solo immagini?). Controlla il Debug qui sotto.")
+                    st.error("Testo insufficiente (Forse il PPTX ha solo immagini?).")
 
-    # --- DEBUG SECTION (RESTAURATA) ---
+    # --- DEBUG SECTION ---
     if st.session_state.get('debug_raw_text'):
         with st.expander("🕵️‍♂️ DEBUG: Vedi cosa ha letto il sistema"):
             st.markdown("**Testo Letto dal File (Primi 2000 caratteri):**")
@@ -361,6 +352,7 @@ with tab2:
         form_values = {}
         missing_fields = []
         
+        # Recupero Blindato
         draft = st.session_state.get('draft_data')
         if not isinstance(draft, dict): draft = {}
         
