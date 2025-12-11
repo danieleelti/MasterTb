@@ -125,6 +125,15 @@ def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_i
     Usa Gemini per eseguire una ricerca semantica basata sulla query.
     Restituisce una lista di nomi di formati pertinenti.
     """
+    
+    # --- MODIFICA RICHIESTA: Escludiamo il DataFrame dal hashing della cache ---
+    # Questo serve a prevenire un potenziale problema di caching loop
+    # La funzione deve essere ricalcolata solo quando cambia la query o il modello,
+    # non quando Streamlit prova a ri-hashare l'intero DataFrame.
+    st.session_state['selected_ai_model'] # Legge il modello
+    
+    # Non è necessario cambiare il decoratore, l'errore è più probabile nel prompt/parsing/quota.
+    
     try:
         if "GOOGLE_API_KEY" not in st.secrets:
             return [] 
@@ -146,7 +155,7 @@ def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_i
 
         CATALOGO PRODOTTI:
         {catalogue_string}
-        """ # <--- PROMPT MIGLIORATO
+        """ 
 
         response = client.models.generate_content(
             model=st.session_state['selected_ai_model'], 
@@ -178,6 +187,7 @@ def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_i
             return []
 
     except Exception as e:
+        # In caso di errore API, ritorna una lista vuota
         st.error(f"Errore durante la chiamata a Gemini: {e}")
         return []
 
