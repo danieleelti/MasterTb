@@ -21,6 +21,8 @@ if 'available_models' not in st.session_state:
     st.session_state['available_models'] = [DEFAULT_MODEL]
 if 'extracted_data' not in st.session_state:
     st.session_state['extracted_data'] = None
+if 'search_results' not in st.session_state:
+    st.session_state['search_results'] = None 
 
 # --- 1. LOGIN ---
 if not st.session_state['logged_in']:
@@ -112,20 +114,20 @@ def search_ai(query, dataframe, model_name):
     if "GOOGLE_API_KEY" not in st.secrets: return []
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     
-    all_cols = list(dataframe.columns)
-    target_col = all_cols[15] if len(all_cols) > 15 else all_cols[0]
-    sub_df = dataframe[[target_col]]
-    context_str = sub_df.to_markdown(index=True)
+    # --- MODIFICA: Inviamo TUTTO il DataFrame (nessun taglio di colonne) ---
+    context_str = dataframe.to_markdown(index=True)
+    # -----------------------------------------------------------------------
 
     sys_prompt = """
-    Sei un assistente di ricerca. Analizza il catalogo.
-    Output: SOLO lista Python di stringhe (Nomi Format). Es: ['Format A'].
+    Sei un assistente di ricerca. Analizza L'INTERO CATALOGO fornito (tutte le colonne: Descrizione, Logistica, Prezzi, Vibe, ecc.).
+    Cerca corrispondenze semantiche profonde.
+    Output: SOLO lista Python di stringhe (Nomi Format). Es: ['Format A', 'Format B'].
     Se nulla corrisponde: [].
     """
     
     model = genai.GenerativeModel(model_name=model_name, generation_config={"temperature": 0.0}, system_instruction=sys_prompt)
     try:
-        response = model.generate_content(f"CATALOGO:\n{context_str}\n\nRICHIESTA: {query}")
+        response = model.generate_content(f"CATALOGO COMPLETO:\n{context_str}\n\nRICHIESTA UTENTE: {query}")
         
         if response.usage_metadata:
             st.session_state['token_usage']['input'] += response.usage_metadata.prompt_token_count
@@ -149,9 +151,8 @@ with st.sidebar:
 
 tab1, tab2, tab3 = st.tabs(["👁️ Cerca & Modifica", "➕ Nuovo Format", "📄 Doc AI (PDF/PPT)"])
 
-# TAB 1: RICERCA (Con Scansione al Centro)
+# TAB 1: RICERCA
 with tab1:
-    # --- SEZIONE SCANNER MODELLI (CENTRALE) ---
     col_scan, col_sel = st.columns([1, 3])
     
     with col_scan:
@@ -182,17 +183,36 @@ with tab1:
     st.divider()
 
     with st.form("search_ai"):
-        q = st.text_input(f"Cerca {id_col}", placeholder="es. attività outdoor")
+        q = st.text_input(f"Cerca {id_col}", placeholder="es. attività outdoor, 50 pax, budget basso")
         btn = st.form_submit_button("Cerca")
     
-    ids_show = product_ids
     if btn and q:
         with st.spinner("..."):
             res = search_ai(q, df, selected_model)
-            if res: ids_show = [x for x in res if x in product_ids]
-            else: st.warning("Nessun risultato.")
+            if res: 
+                valid_ids = [x for x in res if x in product_ids]
+                if valid_ids:
+                    st.session_state['search_results'] = valid_ids
+                else:
+                    st.warning("Nessun risultato valido trovato nel DB.")
+                    st.session_state['search_results'] = None
+            else: 
+                st.warning("Nessun risultato dall'AI.")
+                st.session_state['search_results'] = None
+                
+    if st.session_state['search_results'] is not None:
+        col_msg, col_rst = st.columns([3, 1])
+        count = len(st.session_state['search_results'])
+        col_msg.success(f"🦁 Trovati **{count}** format.")
+        if col_rst.button("❌ Reset"):
+            st.session_state['search_results'] = None
+            st.rerun()
+        ids_to_show = st.session_state['search_results']
+    else:
+        ids_to_show = product_ids
 
-    sel = st.selectbox(f"Seleziona {id_col}", ids_show)
+    sel = st.selectbox(f"Seleziona {id_col}", ids_to_show)
+    
     if sel:
         row = df.loc[sel]
         with st.form("edit"):
@@ -210,7 +230,7 @@ with tab1:
                 load_data.clear()
                 st.rerun()
 
-# TAB 2: NUOVO (Invariato)
+# TAB 2: NUOVO
 with tab2:
     with st.form("new"):
         d = {}
@@ -224,7 +244,7 @@ with tab2:
                 load_data.clear()
                 st.rerun()
 
-# TAB 3: DOC AI (Senza "Aggiungi come copia")
+# TAB 3: DOC AI
 with tab3:
     st.header("Caricamento Documenti")
     uploaded_file = st.file_uploader("Carica PDF o PPTX", type=['pdf', 'pptx', 'ppt'])
@@ -248,7 +268,6 @@ with tab3:
         data_to_save = {}
         col_id_name = id_col
         
-        # Campi Editabili
         for col in [col_id_name] + cols:
             val = st.session_state['extracted_data'].get(col, "")
             new_val = st.text_area(f"**{col}**", value=str(val), height=70)
@@ -256,7 +275,6 @@ with tab3:
         
         st.divider()
         
-        # CONTROLLO DUPLICATI
         current_id_val = data_to_save[col_id_name].strip()
         
         if not current_id_val:
@@ -281,7 +299,6 @@ with tab3:
                 st.success("✅ Questo format è NUOVO.")
                 if st.button("💾 Aggiungi al Foglio"):
                     try:
-                        # Ricostruiamo la lista esatta basandoci sull'header del foglio
                         row_to_append = [data_to_save[col_id_name]] + [data_to_save[c] for c in cols]
                         ws.append_row(row_to_append)
                         st.success(f"Format '{current_id_val}' aggiunto!")
