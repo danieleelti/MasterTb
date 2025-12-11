@@ -138,7 +138,7 @@ def add_new_row(new_data):
 @st.cache_data(show_spinner="Ricerca semantica in corso...")
 def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_id_col_name: str) -> list[str]:
     """
-    Usa Gemini per eseguire una ricerca semantica basata sulla query, usando la configurazione GenerativeModel.
+    Usa Gemini per eseguire una ricerca semantica basata sulla query, usando la sintassi API universale.
     Restituisce una lista di nomi di formati pertinenti.
     """
     
@@ -146,31 +146,46 @@ def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_i
         if "GOOGLE_API_KEY" not in st.secrets:
             return [] 
             
+        # Ritorno alla sintassi universale client.models.generate_content
         client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
         catalogue_string = catalogue_df.to_markdown(index=True)
 
-        # 1. Crea il GenerativeModel con la configurazione utente
-        model = genai.GenerativeModel(
-            model_name=SELECTED_AI_MODEL, 
-            generation_config={"temperature": 0.0},
+        # Costruisco il prompt completo includendo le istruzioni di sistema direttamente
+        full_prompt_text = (
+            FULL_SYSTEM_PROMPT + 
+            f"\n\nCATALOGO PRODOTTI:\n{catalogue_string}" +
+            f"\n\nQUERY UTENTE: {query}"
+        )
+
+        # Configurazione Safety Settings (richiede types.GenerateContentConfig)
+        config = types.GenerateContentConfig(
+            temperature=0.0,
             system_instruction=FULL_SYSTEM_PROMPT,
-            safety_settings={
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            },
+            safety_settings=[
+                types.SafetySetting(
+                    category=HarmCategory.HARM_CATEGORY_HARASSMENT,
+                    threshold=HarmBlockThreshold.BLOCK_NONE,
+                ),
+                types.SafetySetting(
+                    category=HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                    threshold=HarmBlockThreshold.BLOCK_NONE,
+                ),
+                types.SafetySetting(
+                    category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                    threshold=HarmBlockThreshold.BLOCK_NONE,
+                ),
+                types.SafetySetting(
+                    category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                    threshold=HarmBlockThreshold.BLOCK_NONE,
+                ),
+            ]
         )
         
-        # 2. Prepara il contenuto dinamico (Query e Catalogo)
-        contents = [
-            "CATALOGO PRODOTTI:\n" + catalogue_string,
-            "QUERY UTENTE: " + query
-        ]
-
-        # 3. Chiama l'API
-        response = model.generate_content(
-            contents=contents
+        # Chiamata API compatibile con tutte le versioni di google-genai
+        response = client.models.generate_content(
+            model=SELECTED_AI_MODEL, 
+            contents=full_prompt_text,
+            config=config # Passiamo la configurazione, inclusi i safety settings
         )
         
         raw_text = response.text.strip()
@@ -227,7 +242,7 @@ with tab_view_edit:
     st.header("Visualizza e Modifica un Formato Esistente")
     
     # --- INFORMAZIONE SUL MODELLO FISSO (NIENTE SELETTORE) ---
-    st.info(f"Modello AI in uso (Fisso): **{SELECTED_AI_MODEL}** (Modello stabile e potente)")
+    st.info(f"Modello AI in uso (Fisso): **{SELECTED_AI_MODEL}** (Modalità di chiamata API universale)")
     st.markdown("---")
     # --- FINE INFORMAZIONE MODELLO ---
 
