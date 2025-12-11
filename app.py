@@ -103,7 +103,7 @@ def add_new_row(new_data):
 
 # --- Interfaccia Utente Streamlit ---
 
-st.title("🤖 Agente Gestore Prodotti Team Building (Google Sheets)")
+st.title("🦁 MasterTb 🦁") # <--- MODIFICA RICHIESTA QUI
 
 
 # Carica i dati
@@ -145,7 +145,7 @@ with tab_view_edit:
             for column in column_names:
                 current_value = str(product_data[column]) if pd.notna(product_data[column]) else ""
                 
-                # --- INIZIO MODIFICA RICHIESTA: Rende la chiave dinamica includendo l'ID ---
+                # Rende la chiave dinamica includendo l'ID
                 dynamic_key = f"edit_{selected_product_id}_{column}"
                 
                 # Usa text_area per campi potenzialmente lunghi
@@ -157,7 +157,6 @@ with tab_view_edit:
                     new_value = st.text_input(f"**{column}**", 
                                               value=current_value, 
                                               key=dynamic_key)
-                # --- FINE MODIFICA RICHIESTA ---
                     
                 new_values[column] = new_value
 
