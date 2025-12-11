@@ -4,8 +4,24 @@ import pandas as pd
 import json
 import re
 from google import genai
-from google.genai import types
+from google.genai import types # Importa i tipi necessari
 import ast
+from google.genai.types import HarmCategory, HarmBlockThreshold # Importa i tipi di sicurezza
+
+# --- IMPOSTAZIONE MODELLO FISSO DI RIFERIMENTO ---
+# Modello fisso come richiesto dall'utente.
+SELECTED_AI_MODEL = 'gemini-3-pro-preview'
+
+# --- PROMPT DI SISTEMA FISSO ---
+# Istruzioni fisse che definiscono il ruolo del modello e l'output richiesto.
+FULL_SYSTEM_PROMPT = """
+Sei un assistente di ricerca specializzato in format di team building. Analizza la richiesta e il catalogo fornito.
+ISTRUZIONI PER L'OUTPUT:
+1. DEVI leggere TUTTE le colonne del 'CATALOGO PRODOTTI' (Descrizione Breve, Tipologia, Vibe / Emozione, ecc.) per trovare corrispondenze semantiche.
+2. Considera solo i valori della colonna 'Nome Format' come output.
+3. L'output deve essere SOLO E SOLTANTO una lista Python di stringhe, ad esempio: ['Format A', 'Format B', 'Format C']. 
+4. Se non trovi nulla, restituisci una lista vuota: [].
+"""
 
 # --- 1. LOGICA DI ACCESSO TRAMITE PASSWORD ---
 
@@ -122,47 +138,40 @@ def add_new_row(new_data):
 @st.cache_data(show_spinner="Ricerca semantica in corso...")
 def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_id_col_name: str) -> list[str]:
     """
-    Usa Gemini per eseguire una ricerca semantica basata sulla query.
+    Usa Gemini per eseguire una ricerca semantica basata sulla query, usando la configurazione GenerativeModel.
     Restituisce una lista di nomi di formati pertinenti.
     """
-    
-    # --- MODIFICA RICHIESTA: Escludiamo il DataFrame dal hashing della cache ---
-    # Questo serve a prevenire un potenziale problema di caching loop
-    # La funzione deve essere ricalcolata solo quando cambia la query o il modello,
-    # non quando Streamlit prova a ri-hashare l'intero DataFrame.
-    st.session_state['selected_ai_model'] # Legge il modello
-    
-    # Non è necessario cambiare il decoratore, l'errore è più probabile nel prompt/parsing/quota.
     
     try:
         if "GOOGLE_API_KEY" not in st.secrets:
             return [] 
             
+        # Il client è necessario per inizializzare l'ambiente API Key
         client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
         catalogue_string = catalogue_df.to_markdown(index=True)
 
-        prompt = f"""
-        Sei un assistente di ricerca specializzato in format di team building. 
-        Analizza la 'QUERY UTENTE' e restituisci i nomi esatti dei format più rilevanti. 
+        # 1. Crea il GenerativeModel con la configurazione utente (Modifica richiesta)
+        model = genai.GenerativeModel(
+            model_name=SELECTED_AI_MODEL, 
+            generation_config={"temperature": 0.0},
+            system_instruction=FULL_SYSTEM_PROMPT,
+            safety_settings={
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            },
+        )
         
-        ISTRUZIONI:
-        1. DEVI leggere TUTTE le colonne del 'CATALOGO PRODOTTI' (Descrizione Breve, Tipologia, Vibe / Emozione, ecc.) per trovare corrispondenze semantiche.
-        2. Considera solo i valori della colonna '{product_id_col_name}' come output.
-        3. L'output deve essere SOLO E SOLTANTO una lista Python di stringhe, ad esempio: ['Format A', 'Format B', 'Format C']. 
-        4. Se non trovi nulla, restituisci una lista vuota: [].
+        # 2. Prepara il contenuto dinamico (Query e Catalogo)
+        contents = [
+            "CATALOGO PRODOTTI:\n" + catalogue_string,
+            "QUERY UTENTE: " + query
+        ]
 
-        QUERY UTENTE: "{query}"
-
-        CATALOGO PRODOTTI:
-        {catalogue_string}
-        """ 
-
-        response = client.models.generate_content(
-            model=st.session_state['selected_ai_model'], 
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.0
-            )
+        # 3. Chiama l'API
+        response = model.generate_content(
+            contents=contents
         )
         
         raw_text = response.text.strip()
@@ -218,13 +227,10 @@ tab_view_edit, tab_add_format, tab_pdf_ppt = st.tabs([
 with tab_view_edit:
     st.header("Visualizza e Modifica un Formato Esistente")
     
-    # --- POSIZIONE DELLA CONFIGURAZIONE AI ---
-    model_options = ["gemini-3-pro-preview", "gemini-2.0-flash-exp", "gemini-1.5-pro-latest", "gemini-1.5-flash"]
-    if "gemini-3-pro-preview" not in model_options: model_options.insert(0, "gemini-3-pro-preview")
-    selected_model_name = st.selectbox("Modello Google", model_options, key="model_selector_main_tab") 
-    st.session_state['selected_ai_model'] = selected_model_name 
+    # --- INFORMAZIONE SUL MODELLO FISSO (NIENTE SELETTORE) ---
+    st.info(f"Modello AI in uso (Fisso): **{SELECTED_AI_MODEL}** (Modello stabile e potente)")
     st.markdown("---")
-    # --- FINE POSIZIONE DELLA CONFIGURAZIONE AI ---
+    # --- FINE INFORMAZIONE MODELLO ---
 
     search_query = st.text_input(
         f"Cerca il **{product_id_col_name}** con l'AI:", 
@@ -369,11 +375,8 @@ with tab_add_format:
 with tab_pdf_ppt:
     st.header("Automazione del Riempimento tramite Documento (PDF/PPT)")
     
-    # Mostra quale modello è attualmente selezionato (informazione non configurabile in questo tab)
-    if 'selected_ai_model' in st.session_state:
-        st.info(f"Il modello selezionato per l'analisi è: **{st.session_state['selected_ai_model']}**. Dovremo installare le librerie necessarie per leggere i file.")
-    else:
-        st.warning("Selettore del Modello AI non ancora configurato.")
+    # Mostra quale modello è in uso
+    st.info(f"Il modello selezionato per l'analisi è: **{SELECTED_AI_MODEL}**. Dovremo installare le librerie necessarie per leggere i file.")
     
     st.markdown("""
         Per proseguire con l'automazione, dovremo:
