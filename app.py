@@ -5,13 +5,12 @@ import json
 import re
 
 # --- Variabile Globale per la Connessione ---
-# La variabile che conterrà il nostro oggetto Worksheet
+# La variabile che conterrà il nostro oggetto Worksheet (inizializzata più avanti)
 ws = None 
 
 # --- Configurazione e Connessione a Google Sheets ---
 
-# @st.cache_resource mantiene la connessione (l'oggetto Worksheet) attiva e non ricaricata.
-# Non deve avere parametri non hashable.
+# @st.cache_resource mantiene la risorsa (la connessione) attiva tra le esecuzioni.
 @st.cache_resource
 def connect_to_sheet():
     """Stabilisce la connessione con Google Sheets tramite le credenziali."""
@@ -27,13 +26,12 @@ def connect_to_sheet():
         st.caption(f"Tentativo di connessione al file: **{spreadsheet_name}**")
         sh = gc.open(spreadsheet_name)
         
-        # Accesso al primo foglio di lavoro (Worksheet) per evitare problemi di naming
-        # Se preferisci usare il nome "Master_GoogleAi", usa: sh.worksheet("Master_GoogleAi")
+        # Accesso al primo foglio di lavoro (Worksheet)
         worksheet = sh.get_worksheet(0) 
         
         return worksheet
     except Exception as e:
-        st.error(f"❌ Errore di connessione a Google Sheets. Verifica: 1. Le credenziali nei secrets. 2. Che il file '{spreadsheet_name}' sia condiviso con l'email del Service Account. Dettagli: {e}")
+        st.error(f"❌ Errore di connessione a Google Sheets. Dettagli: {e}")
         st.stop()
 
 # --- Inizializzazione della Connessione (Risorsa) ---
@@ -41,43 +39,39 @@ def connect_to_sheet():
 try:
     ws = connect_to_sheet()
 except st.runtime.scriptrunner.StopException:
-    # Ferma l'esecuzione se la connessione fallisce
     st.stop()
 
 # --- Funzioni di Interazione con Google Sheets ---
 
 # @st.cache_data memorizza i dati (il DataFrame) per un accesso rapido.
-# Non deve accettare parametri non hashable come l'oggetto 'ws'.
+# Non accetta parametri non hashable.
 @st.cache_data(ttl=60) 
 def get_all_records():
     """Recupera tutti i record dal foglio di lavoro usando la connessione globale 'ws'."""
     try:
+        # Usa la variabile globale 'ws' che è l'oggetto gspread.Worksheet
         data = ws.get_all_records()
         df = pd.DataFrame(data)
         
         if not df.empty:
-            # Pulisce i nomi delle colonne da spazi bianchi
             df.columns = [col.strip() for col in df.columns]
-            # La prima colonna è l'ID/Nome Prodotto ("Nome Format")
             df.set_index(df.columns[0], inplace=True) 
             
         return df
     except Exception as e:
         st.error(f"Errore nel recupero dei dati: {e}. Controlla che la prima riga contenga i tuoi header.")
-        return pd.DataFrame() # Ritorna un DataFrame vuoto in caso di errore
+        return pd.DataFrame() 
 
 def update_cell(product_id, column_name, new_value):
     """Aggiorna una singola cella nel foglio di lavoro."""
     try:
-        # Recupera tutti i valori per trovare indici (più affidabile)
         all_values = ws.get_all_values()
         
         # 1. Trova la riga
         row_index = -1
         for i, row in enumerate(all_values):
-            # Assumiamo che l'ID sia nella prima colonna (indice 0)
             if row and row[0] == product_id:
-                row_index = i + 1 # gspread usa indici 1-based (riga 1 è l'header)
+                row_index = i + 1 
                 break
         
         if row_index == -1:
@@ -87,7 +81,7 @@ def update_cell(product_id, column_name, new_value):
         header = [col.strip() for col in all_values[0]] 
         col_index = -1
         try:
-            col_index = header.index(column_name) + 1 # gspread usa indici 1-based
+            col_index = header.index(column_name) + 1 
         except ValueError:
              return False, f"Colonna '{column_name}' non trovata nell'header."
         
@@ -112,7 +106,7 @@ def add_new_row(new_data):
 st.title("🤖 Agente Gestore Prodotti Team Building (Google Sheets)")
 
 
-# Carica i dati (la funzione ora non ha argomenti)
+# Carica i dati
 df = get_all_records()
 
 if df.empty:
@@ -121,7 +115,7 @@ if df.empty:
 
 product_ids = [str(id) for id in df.index.tolist()]
 column_names = df.columns.tolist()
-product_id_col_name = df.index.name # Recupera "Nome Format" (la prima colonna)
+product_id_col_name = df.index.name # Recupera "Nome Format"
 
 # TABS: Per separare le funzionalità
 tab_view_edit, tab_add_format, tab_pdf_ppt = st.tabs([
@@ -184,7 +178,7 @@ with tab_view_edit:
                     st.balloons()
                     # Forza la ricarica dei dati (svuota la cache) e ricarica l'app
                     get_all_records.clear()
-                    st.experimental_rerun()
+                    st.rerun() # <--- CORREZIONE 1: st.rerun()
             
 
 # --- TAB 2: Aggiungi Nuovo Formato ---
@@ -221,7 +215,7 @@ with tab_add_format:
                     st.balloons()
                     # Pulisci la cache e ricarica l'app
                     get_all_records.clear()
-                    st.experimental_rerun()
+                    st.rerun() # <--- CORREZIONE 2: st.rerun()
                 else:
                     st.error(message)
 
@@ -233,15 +227,14 @@ with tab_pdf_ppt:
     st.info("Siamo pronti per implementare l'integrazione con Gemini (LLM) per estrarre i dati automaticamente dai tuoi documenti e riempire i campi del foglio.")
     
     st.markdown("""
-        Per proseguire, avremo bisogno di:
-        1.  Installare le librerie per la lettura dei documenti (es. `pypdf`).
-        2.  Ottenere la tua chiave **Gemini API Key** e aggiungerla ai Streamlit Secrets.
-        3.  Scrivere la logica per inviare il testo estratto a Gemini e chiedere l'output nel formato esatto delle tue colonne.
+        Per proseguire con l'automazione, dovremo:
+        1.  Installare le librerie per la lettura dei documenti (`pypdf`, `python-pptx`).
+        2.  Ottenere la tua chiave **Gemini API Key** e configurarla nei Streamlit Secrets.
+        3.  Implementare la logica di estrazione AI in questa sezione.
     """)
     
-    # --- Placeholder per l'integrazione AI ---
+    # Placeholder per l'integrazione AI
     st.subheader("Fase AI: Estrazione Dati")
     # uploaded_file = st.file_uploader("Carica un file PDF o PPT:", type=["pdf", "pptx"])
     # if uploaded_file:
-    #     # La logica di estrazione e chiamata a Gemini andrà qui
     #     st.warning("Funzionalità in attesa di implementazione.")
