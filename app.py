@@ -153,8 +153,9 @@ def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_i
         """
 
         # 4. Chiama l'API
+        # Usa il modello selezionato dalla session state
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model=st.session_state['selected_ai_model'], 
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.0
@@ -205,6 +206,15 @@ tab_view_edit, tab_add_format, tab_pdf_ppt = st.tabs([
 with tab_view_edit:
     st.header("Visualizza e Modifica un Formato Esistente")
     
+    # --- POSIZIONE DELLA CONFIGURAZIONE AI (MODIFICA RICHIESTA) ---
+    model_options = ["gemini-3-pro-preview", "gemini-2.0-flash-exp", "gemini-1.5-pro-latest", "gemini-1.5-flash"]
+    if "gemini-3-pro-preview" not in model_options: model_options.insert(0, "gemini-3-pro-preview")
+    # Uso st.selectbox (non st.sidebar) e aggiungo una key univoca
+    selected_model_name = st.selectbox("Modello Google", model_options, key="model_selector_main_tab") 
+    st.session_state['selected_ai_model'] = selected_model_name 
+    st.markdown("---")
+    # --- FINE POSIZIONE DELLA CONFIGURAZIONE AI ---
+
     search_query = st.text_input(
         f"Cerca il **{product_id_col_name}** con l'AI:", 
         placeholder="Esempio: 'il format dove si vola' o 'prodotti a basso costo'",
@@ -345,11 +355,15 @@ with tab_add_format:
 with tab_pdf_ppt:
     st.header("Automazione del Riempimento tramite Documento (PDF/PPT)")
     
-    st.info("Siamo pronti per implementare l'integrazione con Gemini (LLM) per estrarre i dati automaticamente dai tuoi documenti e riempire i campi del foglio.")
+    # Mostra quale modello è attualmente selezionato (informazione non configurabile in questo tab)
+    if 'selected_ai_model' in st.session_state:
+        st.info(f"Il modello selezionato per l'analisi è: **{st.session_state['selected_ai_model']}**. Dovremo installare le librerie necessarie per leggere i file.")
+    else:
+        st.warning("Selettore del Modello AI non ancora configurato.")
     
     st.markdown("""
         Per proseguire con l'automazione, dovremo:
-        1.  Installare le librerie per la lettura dei documenti (`pypdf`, `python-pptx`).
+        1.  **Installare le librerie** per la lettura dei documenti (`pypdf`, `python-pptx`).
         2.  Usare la chiave **Gemini API Key** già configurata.
         3.  Implementare la logica di estrazione AI in questa sezione.
     """)
