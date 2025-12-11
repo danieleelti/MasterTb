@@ -20,12 +20,12 @@ def connect_to_sheet():
         
         # Apri il foglio di lavoro
         spreadsheet_name = "MasterTbGoogleAi"
-        st.caption(f"Tentativo di connessione al foglio: **{spreadsheet_name}**")
+        st.caption(f"Tentativo di connessione al foglio: **Master_GoogleAi**")
         sh = gc.open(spreadsheet_name)
         
         # Supponiamo che la tabella sia nel primo foglio (Worksheet)
         # *** Importante: verifica il nome esatto del tuo foglio se non è 'Foglio1' ***
-        worksheet = sh.worksheet("Foglio1") 
+        worksheet = sh.worksheet("Master_GoogleAi") 
         
         return worksheet
     except Exception as e:
