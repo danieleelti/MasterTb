@@ -476,6 +476,8 @@ if st.session_state['pending_duplicate']:
                     ws.update_cell(r_idx, c_idx_l, edited_log)
 
                     st.toast("Aggiornato!", icon="✅")
+                    
+                    # NON RESETTARE IL LAST PROCESSED FILE PER EVITARE LOOP
                     st.session_state['pending_duplicate'] = None
                     load_data.clear()
                     st.rerun()
@@ -636,7 +638,8 @@ if st.session_state['pending_changes']:
                     st.success("Salvato!")
                     st.session_state['draft_data'] = {}
                     st.session_state['pending_changes'] = None
-                    st.session_state['last_processed_file'] = None
+                    # QUI LA MODIFICA: NON RESETTIAMO last_processed_file
+                    # st.session_state['last_processed_file'] = None  <-- RIMOSSO
                     load_data.clear()
                     st.rerun()
                 except Exception as e: st.error(f"Errore: {e}")
