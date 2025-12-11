@@ -190,7 +190,7 @@ def analyze_document_with_gemini(text_content, columns):
     2. Campo '{desc_col_name}': Scrivi un paragrafo discorsivo di ALMENO 5-6 RIGHE COMPLETE. Descrivi l'attività in modo coinvolgente.
     
     REGOLE SPECIFICHE:
-    - Campo 'Social': Solo "SI" o "NO".
+    - Campo 'Social' e 'Novità': Solo "SI" o "NO".
     - Campo 'Ranking': Solo numero intero da 1 a 5.
     - Campo 'Durata Ideale': Calcola la MEDIA se c'è un range. Scrivi solo il numero.
     - Se l'informazione MANCA, scrivi "[[RIEMPIMENTO MANUALE]]".
@@ -412,10 +412,11 @@ with st.form("master_form"):
         if "[[RIEMPIMENTO MANUALE]]" in val: val = ""
         
         # Logica widget specifici
-        if "social" in c_lower:
-            options_social = ["NO", "SI"]
-            idx_social = 1 if ("si" in val.lower() or "yes" in val.lower()) else 0
-            form_values[c] = st.selectbox(f"**{c}**", options_social, index=idx_social)
+        # SOCIAL & NOVITÀ
+        if "social" in c_lower or "novità" in c_lower or "novita" in c_lower:
+            options_bool = ["NO", "SI"]
+            idx_bool = 1 if ("si" in val.lower() or "yes" in val.lower()) else 0
+            form_values[c] = st.selectbox(f"**{c}**", options_bool, index=idx_bool)
         
         elif "ranking" in c_lower:
             options_ranking = ["1", "2", "3", "4", "5"]
