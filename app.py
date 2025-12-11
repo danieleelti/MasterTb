@@ -11,7 +11,8 @@ import pypdf
 from pptx import Presentation
 
 # --- CONFIGURAZIONE ---
-DEFAULT_MODEL = "models/gemini-3-pro-preview" 
+# Modello di default richiesto
+DEFAULT_MODEL = "models/gemini-2.5-flash-lite" 
 
 # --- INIZIALIZZAZIONE STATO ---
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
@@ -22,7 +23,7 @@ if 'available_models' not in st.session_state:
 if 'extracted_data' not in st.session_state:
     st.session_state['extracted_data'] = None
 if 'search_results' not in st.session_state:
-    st.session_state['search_results'] = None 
+    st.session_state['search_results'] = None
 
 # --- 1. LOGIN ---
 if not st.session_state['logged_in']:
@@ -114,20 +115,18 @@ def search_ai(query, dataframe, model_name):
     if "GOOGLE_API_KEY" not in st.secrets: return []
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     
-    # --- MODIFICA: Inviamo TUTTO il DataFrame (nessun taglio di colonne) ---
+    # Inviamo TUTTO il DataFrame
     context_str = dataframe.to_markdown(index=True)
-    # -----------------------------------------------------------------------
 
     sys_prompt = """
-    Sei un assistente di ricerca. Analizza L'INTERO CATALOGO fornito (tutte le colonne: Descrizione, Logistica, Prezzi, Vibe, ecc.).
-    Cerca corrispondenze semantiche profonde.
+    Sei un assistente di ricerca. Analizza L'INTERO CATALOGO fornito.
     Output: SOLO lista Python di stringhe (Nomi Format). Es: ['Format A', 'Format B'].
     Se nulla corrisponde: [].
     """
     
     model = genai.GenerativeModel(model_name=model_name, generation_config={"temperature": 0.0}, system_instruction=sys_prompt)
     try:
-        response = model.generate_content(f"CATALOGO COMPLETO:\n{context_str}\n\nRICHIESTA UTENTE: {query}")
+        response = model.generate_content(f"CATALOGO:\n{context_str}\n\nRICHIESTA: {query}")
         
         if response.usage_metadata:
             st.session_state['token_usage']['input'] += response.usage_metadata.prompt_token_count
@@ -144,7 +143,6 @@ def search_ai(query, dataframe, model_name):
 # --- INTERFACCIA ---
 st.title("🦁 MasterTb Manager")
 
-# Sidebar solo per i token
 with st.sidebar:
     st.header("🔢 Token")
     st.metric("Totale", st.session_state['token_usage']['total'])
@@ -160,6 +158,7 @@ with tab1:
             if "GOOGLE_API_KEY" in st.secrets:
                 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
                 try:
+                    # Filtra modelli che supportano generateContent
                     models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
                     if models:
                         st.session_state['available_models'] = models
@@ -171,6 +170,7 @@ with tab1:
     
     with col_sel:
         idx_def = 0
+        # Cerca di selezionare il default se presente
         if DEFAULT_MODEL in st.session_state['available_models']:
             idx_def = st.session_state['available_models'].index(DEFAULT_MODEL)
             
@@ -183,7 +183,7 @@ with tab1:
     st.divider()
 
     with st.form("search_ai"):
-        q = st.text_input(f"Cerca {id_col}", placeholder="es. attività outdoor, 50 pax, budget basso")
+        q = st.text_input(f"Cerca {id_col}", placeholder="es. attività outdoor, 50 pax")
         btn = st.form_submit_button("Cerca")
     
     if btn and q:
