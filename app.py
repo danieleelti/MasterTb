@@ -6,6 +6,38 @@ import re
 from google import genai
 from google.genai import types
 
+# --- 1. LOGICA DI ACCESSO TRAMITE PASSWORD ---
+
+# Inizializza lo stato di sessione
+if 'logged_in' not in st.session_state:
+    st.session_state['logged_in'] = False
+
+# Se l'utente non è loggato, mostra il form di login e ferma l'esecuzione
+if not st.session_state['logged_in']:
+    st.title("Accesso richiesto per 🦁 MasterTb 🦁")
+    
+    # Verifica che il secret della password esista
+    if "login_password" in st.secrets:
+        PASSWORD = st.secrets["login_password"]
+        
+        with st.form("login_form"):
+            password_input = st.text_input("Inserisci la password", type="password")
+            submitted = st.form_submit_button("Accedi")
+            
+            if submitted:
+                if password_input == PASSWORD:
+                    st.session_state['logged_in'] = True
+                    st.success("Accesso eseguito con successo!")
+                    st.rerun()
+                else:
+                    st.error("Password errata.")
+    else:
+        st.error("❌ Errore di configurazione: la chiave 'login_password' non è stata trovata nei secrets di Streamlit.")
+    
+    st.stop() # Ferma l'esecuzione di tutto il codice sottostante finché l'accesso non è eseguito
+
+# --- IL RESTO DEL CODICE CONTINUA SOLO SE st.session_state['logged_in'] è True ---
+
 # --- Variabile Globale per la Connessione ---
 ws = None 
 
@@ -84,7 +116,7 @@ def add_new_row(new_data):
     except Exception as e:
         return False, f"Errore nell'aggiunta del formato: {e}"
 
-# --- NUOVA FUNZIONE DI RICERCA SEMANTICA CON GEMINI ---
+# --- FUNZIONE DI RICERCA SEMANTICA CON GEMINI ---
 
 @st.cache_data(show_spinner="Ricerca semantica in corso...")
 def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_id_col_name: str) -> list[str]:
@@ -94,8 +126,8 @@ def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_i
     """
     try:
         if "GEMINI_API_KEY" not in st.secrets:
-            st.warning("Chiave GEMINI_API_KEY non configurata nei secrets. Verrà usata la ricerca testuale.")
-            return [] # Ritorna una lista vuota per fallback
+            # Fallback se la chiave AI non è configurata
+            return [] 
             
         # 1. Inizializza il client Gemini
         client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
@@ -130,28 +162,24 @@ def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_i
         )
         
         # 5. Processa la risposta (deve essere una lista Python)
-        # Rimuove potenziali blocchi di codice markdown e cerca la lista
+        import ast
         raw_text = response.text.strip().replace('`', '').replace('python', '').replace('json', '')
         
-        # Tentativo di eseguire la stringa per ottenere la lista
-        import ast
         try:
             result_list = ast.literal_eval(raw_text)
             if isinstance(result_list, list) and all(isinstance(item, str) for item in result_list):
                 return result_list
             else:
-                st.error("L'AI non ha restituito una lista di nomi di formati valida. Ritorno vuoto.")
                 return []
         except:
-            st.error(f"Errore di parsing del risultato AI: {raw_text}. Ritorno vuoto.")
             return []
 
     except Exception as e:
-        st.error(f"Errore durante la chiamata a Gemini: {e}")
+        # In caso di errore API, ritorna una lista vuota
         return []
 
 
-# --- Interfaccia Utente Streamlit ---
+# --- Interfaccia Utente Streamlit (Inizia solo dopo il Login) ---
 
 st.title("🦁 MasterTb 🦁")
 
@@ -177,7 +205,6 @@ tab_view_edit, tab_add_format, tab_pdf_ppt = st.tabs([
 with tab_view_edit:
     st.header("Visualizza e Modifica un Formato Esistente")
     
-    # 1. Campo di testo per la ricerca (AI-based Filtering)
     search_query = st.text_input(
         f"Cerca il **{product_id_col_name}** con l'AI:", 
         placeholder="Esempio: 'il format dove si vola' o 'prodotti a basso costo'",
@@ -187,16 +214,25 @@ with tab_view_edit:
     filtered_ids = []
     
     if search_query:
-        # Chiamata alla funzione Gemini
-        gemini_results = search_formats_with_gemini(search_query, df, product_id_col_name)
+        if "GEMINI_API_KEY" in st.secrets:
+            # Chiamata alla funzione Gemini (Ricerca Semantica)
+            gemini_results = search_formats_with_gemini(search_query, df, product_id_col_name)
+        else:
+            # Fallback a ricerca testuale se la chiave Gemini non è disponibile
+            gemini_results = []
+            st.info("Ricerca testuale classica in uso (chiave Gemini non trovata).")
+            
         
         if gemini_results:
             # Filtra solo gli ID che esistono effettivamente nel catalogo (per sicurezza)
             filtered_ids = [id for id in gemini_results if id in product_ids]
         else:
-            st.warning("L'AI non ha trovato format pertinenti. Prova con una ricerca testuale classica qui sotto.")
-            # Fallback: se Gemini non trova nulla, usa la ricerca testuale standard
+            # Fallback alla ricerca testuale standard se l'AI non trova nulla
             filtered_ids = [id for id in product_ids if search_query.lower() in id.lower()]
+            
+            if not gemini_results and filtered_ids:
+                 st.info("Ricerca semantica non riuscita, mostra risultati per corrispondenza testuale.")
+
             
     # Se la ricerca è vuota, usiamo l'elenco completo per la selezione iniziale
     if not search_query:
