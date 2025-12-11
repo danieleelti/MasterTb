@@ -115,7 +115,7 @@ product_ids = [str(i) for i in df.index.tolist()]
 cols = df.columns.tolist()
 id_col = df.index.name
 
-# --- HELPER LETTURA FILE ---
+# --- HELPER UTILITY ---
 def get_shape_text_recursive(shape):
     text = ""
     try:
@@ -150,18 +150,27 @@ def read_file_content(uploaded_file):
         st.error(f"Errore lettura file: {e}")
     return text
 
+def create_slug(text):
+    """Crea uno slug valido per l'URL dal nome del format."""
+    if not text: return ""
+    # Rimuove caratteri speciali, mette tutto lowercase, sostituisce spazi con -
+    text = text.lower().strip()
+    text = re.sub(r'[^a-z0-9\s-]', '', text)
+    text = re.sub(r'\s+', '-', text)
+    return text
+
 # --- 3. FUNZIONI AI ---
 def analyze_document_with_gemini(text_content, columns):
     if "GOOGLE_API_KEY" not in st.secrets: return {}
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 
-    # Identifica colonna descrizione
     desc_col_name = "Descrizione Breve"
     for c in columns:
         if "descrizione" in c.lower():
             desc_col_name = c
             break
 
+    # Prompt aggiornato con REGOLE DI FORMATTAZIONE SPECIFICHE
     sys_prompt = f"""
     Sei un esperto copywriter e data entry. Analizza il testo fornito.
     
@@ -169,16 +178,19 @@ def analyze_document_with_gemini(text_content, columns):
     {json.dumps(columns)}
     
     1. Campo Chiave: '{columns[0]}' (NOME FORMAT).
-    2. Campo '{desc_col_name}': QUESTO È IL CAMPO PIÙ IMPORTANTE. Devi scrivere un paragrafo discorsivo di ALMENO 5-6 RIGHE COMPLETE. Descrivi l'attività in modo coinvolgente, spiegando cosa si fa, gli obiettivi e l'atmosfera. Non usare elenchi puntati qui, ma testo scorrevole.
+    2. Campo '{desc_col_name}': Scrivi un paragrafo discorsivo di ALMENO 5-6 RIGHE COMPLETE. Descrivi l'attività in modo coinvolgente.
     
-    REGOLE GENERALI:
-    - Se trovi l'informazione, scrivila.
-    - Se l'informazione MANCA DEL TUTTO, scrivi ESATTAMENTE: "[[RIEMPIMENTO MANUALE]]".
-    - Rispondi SOLO con il JSON.
+    REGOLE SPECIFICHE PER I CAMPI:
+    - Campo 'Social': Se l'attività prevede foto/video o condivisione, scrivi "SI", altrimenti "NO".
+    - Campo 'Ranking': Valuta l'intensità/complessità da 1 a 5. Scrivi solo il numero intero (es. 3).
+    - Campo 'Durata Ideale': Se trovi un range (es. 2-4 ore), calcola la MEDIA (es. 3). Scrivi solo il numero o la media.
+    - Se l'informazione MANCA DEL TUTTO, scrivi "[[RIEMPIMENTO MANUALE]]".
+    
+    Rispondi SOLO con il JSON.
     """
 
     model = genai.GenerativeModel(
-        model_name=DOC_MODEL, # Fissato a Gemini 3 Pro
+        model_name=DOC_MODEL,
         generation_config={"temperature": 0.2, "response_mime_type": "application/json"},
         system_instruction=sys_prompt
     )
@@ -201,26 +213,22 @@ def search_ai(query, dataframe):
     
     context_str = dataframe.to_markdown(index=True)
     
-    # --- PROMPT DI RICERCA SEMANTICA "PENSANTE" ---
     sys_prompt = """
-    Sei un Senior Event Manager esperto in Team Building e Formazione Aziendale.
+    Sei un Senior Event Manager esperto in Team Building.
     
-    Il tuo compito è analizzare la RICHIESTA dell'utente e trovare nel CATALOGO i format più pertinenti.
+    Analizza la RICHIESTA dell'utente e trova nel CATALOGO i format più pertinenti.
     
-    ISTRUZIONI DI RAGIONAMENTO (THINKING PROCESS):
-    1. Analizza la richiesta dell'utente. Se scrive termini specifici (es. "ponte tibetano"), astrai il concetto (es. "Attività Outdoor", "Adrenalina", "Natura", "Coraggio").
-    2. Cerca nel CATALOGO non solo per parole chiave esatte, ma per ASSOCIAZIONE DI IDEE.
-       - Es: "Ponte Tibetano" -> Cerca format che contengono "Outdoor", "Adventure Park", "Survival", "Mountain".
-       - Es: "Cucina" -> Cerca "Masterchef", "Cooking", "Wine".
-    3. Restituisci i NOMI DEI FORMAT (l'ID della prima colonna) che soddisfano meglio la richiesta, anche se la parola esatta non c'è.
+    THINKING PROCESS:
+    1. Astrai la richiesta (es. "ponte tibetano" -> "Outdoor/Avventura").
+    2. Cerca per ASSOCIAZIONE DI IDEE, non solo keyword esatte.
+    3. Restituisci i NOMI DEI FORMAT (ID colonna 1).
     
-    Output: SOLO una lista Python di stringhe. Es: ['Nome Format 1', 'Nome Format 2'].
-    Nessun altro testo o spiegazione.
+    Output: SOLO lista Python. Es: ['Format A', 'Format B'].
     """
     
     model = genai.GenerativeModel(
-        model_name=SEARCH_MODEL, # Fissato a Gemini 2.5 Flash
-        generation_config={"temperature": 0.1}, # Leggera temp per permettere associazioni creative
+        model_name=SEARCH_MODEL,
+        generation_config={"temperature": 0.1},
         system_instruction=sys_prompt
     )
     try:
@@ -235,7 +243,7 @@ def search_ai(query, dataframe):
 # --- INTERFACCIA PRINCIPALE ---
 st.title("🦁 MasterTb Manager")
 
-# 1. AREA UPLOAD (Sempre in cima)
+# 1. AREA UPLOAD
 uploaded_file = st.file_uploader("📂 Trascina qui PDF o PPTX per Analizzare/Creare", type=['pdf', 'pptx', 'ppt'])
 
 if uploaded_file:
@@ -247,11 +255,10 @@ if uploaded_file:
             if len(raw_text) > 10:
                 extracted = analyze_document_with_gemini(raw_text, [id_col] + cols)
                 
-                # --- SAFETY CHECK ---
                 if isinstance(extracted, list): extracted = extracted[0] if extracted else {}
                 if not isinstance(extracted, dict): extracted = {}
 
-                # --- FUZZY MATCH LOGIC ---
+                # FUZZY MATCH
                 extracted_name = str(extracted.get(id_col, "")).strip()
                 matches = difflib.get_close_matches(extracted_name, product_ids, n=1, cutoff=0.85)
                 
@@ -259,7 +266,6 @@ if uploaded_file:
                     existing_id = matches[0]
                     st.toast(f"Trovato esistente: {existing_id}", icon="🔄")
                     
-                    # Recupera dati e prepara SOLO aggiornamento descrizione
                     current_data = df.loc[existing_id].to_dict()
                     desc_col_name = "Descrizione Breve"
                     for c in cols:
@@ -275,9 +281,8 @@ if uploaded_file:
                         'new_value': new_desc,
                         'old_value': current_data.get(desc_col_name, "")
                     }
-                    st.session_state['draft_data'] = {} # Pulisce bozza se è duplicato
+                    st.session_state['draft_data'] = {}
                 else:
-                    # È UN NUOVO FORMAT
                     st.session_state['pending_duplicate'] = None
                     st.session_state['draft_data'] = extracted if extracted else {}
                     if st.session_state['draft_data']:
@@ -285,7 +290,7 @@ if uploaded_file:
             else:
                 st.error("Testo insufficiente nel file.")
 
-# INTERVENTO DUPLICATI (Box Giallo)
+# BOX AGGIORNAMENTO DUPLICATI
 if st.session_state['pending_duplicate']:
     st.divider()
     dup_data = st.session_state['pending_duplicate']
@@ -323,11 +328,11 @@ if st.session_state['pending_duplicate']:
             st.rerun()
     st.divider()
 
-# 2. CAMPO CERCA (AI)
+# 2. RICERCA
 st.markdown("### 🔎 Ricerca e Selezione")
 col_search, col_rst = st.columns([4, 1])
 with col_search:
-    q = st.text_input("Cerca Format (per contenuto, idea o nome)", placeholder="Es. ponte tibetano, cucina, investigazione...")
+    q = st.text_input("Cerca Format (per contenuto, idea o nome)", placeholder="Es. ponte tibetano, cucina...")
 with col_rst:
     st.write("")
     st.write("")
@@ -339,18 +344,16 @@ with col_rst:
                 st.session_state['search_results'] = valid_ids if valid_ids else None
                 if not valid_ids: st.warning("Nessun risultato pertinente trovato.")
 
-# Gestione opzioni selectbox
 if st.session_state['search_results'] is not None:
     options = st.session_state['search_results']
-    st.info(f"Filtro AI attivo: {len(options)} format trovati per '{q}'.")
+    st.info(f"Filtro AI attivo: {len(options)} format trovati.")
     if st.button("Mostra Tutti"):
         st.session_state['search_results'] = None
         st.rerun()
 else:
     options = product_ids
 
-# 3. SELEZIONE NOME FORMAT
-# Se c'è un draft_data (Nuovo format da upload), non selezioniamo nulla dal DB ma mostriamo quello
+# 3. SELEZIONE E FORM
 is_new_mode = False
 if st.session_state['draft_data'] and not st.session_state['pending_duplicate']:
     is_new_mode = True
@@ -361,20 +364,16 @@ if st.session_state['draft_data'] and not st.session_state['pending_duplicate']:
 else:
     selected_id = st.selectbox("Seleziona Format da Modificare", options)
 
-# 4. TABELLA (FORM)
 st.markdown("### 📝 Dettagli Format")
 
 with st.form("master_form"):
     form_values = {}
     
-    # DETERMINA LA SORGENTE DATI
     if is_new_mode:
-        # Sorgente: Dati AI (Draft)
         source_data = st.session_state['draft_data']
         current_id_val = str(source_data.get(id_col, ""))
         submit_label = "💾 SALVA NUOVO FORMAT"
     else:
-        # Sorgente: Google Sheet (Row selezionata)
         if selected_id:
             source_data = df.loc[selected_id].to_dict()
             current_id_val = selected_id
@@ -384,36 +383,67 @@ with st.form("master_form"):
             st.form_submit_button("...")
             st.stop()
 
-    # RENDERIZZA CAMPI
-    # Gestione ID (Chiave primaria)
+    # RENDERIZZA ID
     if is_new_mode:
         new_id = st.text_input(f"**{id_col} (UNICO)**", value=current_id_val)
     else:
-        # In edit mode l'ID non si tocca per non rompere il database
         st.text_input(f"**{id_col}**", value=current_id_val, disabled=True)
         new_id = current_id_val
 
-    # Loop sulle colonne
+    # RENDERIZZA COLONNE CON LOGICA SPECIFICA
     for c in cols:
         val = str(source_data.get(c, ""))
+        c_lower = c.lower()
         
         # Pulizia placeholder AI
         if "[[RIEMPIMENTO MANUALE]]" in val: val = ""
         
-        # Altezza dinamica per descrizioni
-        height = 150 if "descrizione" in c.lower() else 0
+        # --- LOGICA CAMPI SPECIALI ---
         
-        if len(val) > 50 or height > 0:
-            form_values[c] = st.text_area(f"**{c}**", value=val, height=height if height else None)
-        else:
+        # 1. SOCIAL -> Solo SI/NO
+        if "social" in c_lower:
+            options_social = ["NO", "SI"]
+            # Cerca di capire cosa ha messo l'AI o il DB
+            idx_social = 0
+            if "si" in val.lower() or "yes" in val.lower(): idx_social = 1
+            form_values[c] = st.selectbox(f"**{c}**", options_social, index=idx_social)
+            
+        # 2. RANKING -> Solo 1-5
+        elif "ranking" in c_lower:
+            options_ranking = ["1", "2", "3", "4", "5"]
+            # Tenta di trovare il numero nel valore attuale
+            try:
+                curr_rank = str(int(float(val))) if val.strip() else "1"
+                if curr_rank not in options_ranking: curr_rank = "3" # Default medio
+            except: curr_rank = "3"
+            
+            form_values[c] = st.selectbox(f"**{c}**", options_ranking, index=options_ranking.index(curr_rank))
+            
+        # 3. LINK WEBSITE -> Autogenerazione
+        elif "link" in c_lower and "website" in c_lower:
+            # Se è vuoto o è un nuovo format, rigenera lo slug corretto
+            if not val or is_new_mode:
+                slug = create_slug(new_id)
+                val = f"https://www.teambuilding.it/project/{slug}/"
             form_values[c] = st.text_input(f"**{c}**", value=val)
+            
+        # 4. DURATA IDEALE (Placeholder hint)
+        elif "durata" in c_lower and "ideale" in c_lower:
+             form_values[c] = st.text_input(f"**{c}** (Media in ore)", value=val, help="Inserisci un valore medio (es. 3)")
 
-    # SUBMIT
+        # 5. ALTRI CAMPI (Testo libero o Area)
+        else:
+            height = 150 if "descrizione" in c_lower else 0
+            if len(val) > 50 or height > 0:
+                form_values[c] = st.text_area(f"**{c}**", value=val, height=height if height else None)
+            else:
+                form_values[c] = st.text_input(f"**{c}**", value=val)
+
     submitted = st.form_submit_button(submit_label, type="primary")
 
     if submitted:
         if is_new_mode:
-            # --- SALVATAGGIO NUOVO ---
+            # SAVE NEW
             if not new_id.strip():
                 st.error(f"Il campo {id_col} è obbligatorio.")
             elif new_id in product_ids:
@@ -428,13 +458,10 @@ with st.form("master_form"):
                     st.rerun()
                 except Exception as e: st.error(f"Errore salvataggio: {e}")
         else:
-            # --- AGGIORNAMENTO ESISTENTE ---
-            # Aggiorniamo solo le celle cambiate
+            # UPDATE EXISTING
             updates_count = 0
             try:
-                # Indici foglio: Row parte da 2 (1 headers), Col parte da 2 (1 ID)
                 row_idx = product_ids.index(selected_id) + 2
-                
                 for col_name, new_val in form_values.items():
                     old_val = str(source_data.get(col_name, ""))
                     if old_val != new_val:
