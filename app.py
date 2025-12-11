@@ -10,6 +10,33 @@ from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import pypdf
 from pptx import Presentation
 
+# --- CUSTOM CSS PER UPLOAD EVIDENTE (EFFETTO "ACCOGLIENZA") ---
+st.markdown("""
+    <style>
+    /* Stile base del box di upload */
+    [data-testid='stFileUploaderDropzone'] {
+        border: 2px dashed #ccc;
+        border-radius: 10px;
+        background-color: #f8f9fa;
+        transition: all 0.2s ease-in-out;
+    }
+
+    /* EFFETTO QUANDO PASSI SOPRA (DRAG OVER) */
+    [data-testid='stFileUploaderDropzone']:hover {
+        border: 2px dashed #FF4B4B !important; /* Bordo Rosso Streamlit */
+        background-color: #FFECEC !important; /* Sfondo Rossiccio chiaro */
+        transform: scale(1.02); /* Leggero effetto "pop" (zoom) */
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1); /* Ombra per profondità */
+    }
+    
+    /* Cambia colore icona e testo durante l'hover */
+    [data-testid='stFileUploaderDropzone']:hover i,
+    [data-testid='stFileUploaderDropzone']:hover span {
+        color: #FF4B4B !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 # --- CONFIGURAZIONE ---
 SEARCH_MODEL = "models/gemini-2.5-flash-lite"
 DOC_MODEL = "models/gemini-3-pro-preview"
@@ -25,14 +52,11 @@ if 'search_results' not in st.session_state:
 if 'pending_duplicate' not in st.session_state:
     st.session_state['pending_duplicate'] = None
 
+# FIX CRITICO: Inizializzazione sicura
 if 'draft_data' not in st.session_state:
     st.session_state['draft_data'] = {}
 elif st.session_state['draft_data'] is None:
     st.session_state['draft_data'] = {}
-
-# Variabili di debug per vedere cosa succede "dietro le quinte"
-if 'debug_text' not in st.session_state: st.session_state['debug_text'] = ""
-if 'debug_json' not in st.session_state: st.session_state['debug_json'] = ""
 
 # --- 1. LOGIN ---
 if not st.session_state['logged_in']:
@@ -76,24 +100,20 @@ product_ids = [str(i) for i in df.index.tolist()]
 cols = df.columns.tolist()
 id_col = df.index.name
 
-# --- HELPER LETTURA FILE (MIGLIORATO PER PPTX) ---
+# --- HELPER LETTURA FILE ---
 def read_file_content(uploaded_file):
     text = ""
     try:
         if uploaded_file.name.endswith('.pdf'):
             pdf_reader = pypdf.PdfReader(uploaded_file)
             for page in pdf_reader.pages:
-                extracted = page.extract_text()
-                if extracted: text += extracted + "\n"
-                
+                text += page.extract_text() + "\n"
         elif uploaded_file.name.endswith('.pptx') or uploaded_file.name.endswith('.ppt'):
             prs = Presentation(uploaded_file)
             for slide in prs.slides:
-                # Metodo corretto per leggere le forme in PPTX
                 for shape in slide.shapes:
                     if hasattr(shape, "has_text_frame") and shape.has_text_frame:
                         text += shape.text_frame.text + "\n"
-                    # Alcuni titoli sono shape semplici
                     elif hasattr(shape, "text"):
                         text += shape.text + "\n"
     except Exception as e:
@@ -106,18 +126,16 @@ def analyze_document_with_gemini(text_content, columns):
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 
     sys_prompt = f"""
-    Sei un esperto data entry. Estrai dati dal testo del documento per compilare un database.
-    
-    COLONNE RICHIESTE (Chiavi JSON):
+    Sei un esperto data entry. Estrai dati dal documento per queste colonne:
     {json.dumps(columns)}
     
-    IMPORTANTE: Il campo '{columns[0]}' è il NOME DEL FORMAT. Cerca il titolo principale.
+    Campo chiave: '{columns[0]}' (NOME FORMAT).
     
     REGOLE:
-    1. Cerca nel testo i valori corrispondenti alle colonne.
-    2. Se trovi il dato, inseriscilo.
-    3. Se il dato NON c'è, scrivi: "[[RIEMPIMENTO MANUALE]]".
-    4. Rispondi SOLO con un JSON valido piatto (chiave-valore).
+    1. Se il dato manca, scrivi ESATTAMENTE: "[[RIEMPIMENTO MANUALE]]".
+    2. Non inventare.
+    
+    OUTPUT: Solo JSON valido.
     """
 
     model = genai.GenerativeModel(
@@ -127,10 +145,12 @@ def analyze_document_with_gemini(text_content, columns):
     )
 
     try:
-        response = model.generate_content(f"TESTO DOCUMENTO:\n{text_content}")
+        response = model.generate_content(f"DOCUMENTO:\n{text_content}")
         clean_text = response.text.strip()
-        if clean_text.startswith("```json"): clean_text = clean_text[7:]
-        if clean_text.endswith("```"): clean_text = clean_text[:-3]
+        if clean_text.startswith("```json"):
+            clean_text = clean_text[7:]
+        if clean_text.endswith("```"):
+            clean_text = clean_text[:-3]
         
         return json.loads(clean_text.strip())
     except Exception as e:
@@ -252,33 +272,18 @@ with tab2:
     if uploaded_file:
         if st.button("⚡ Estrai Dati"):
             with st.spinner("Analisi in corso..."):
-                # 1. Lettura Testo
                 raw_text = read_file_content(uploaded_file)
-                st.session_state['debug_text'] = raw_text # Salva per debug
-                
                 if len(raw_text) > 10:
-                    # 2. Chiamata AI
                     extracted = analyze_document_with_gemini(raw_text, [id_col] + cols)
-                    st.session_state['debug_json'] = extracted # Salva per debug
-                    
                     st.session_state['draft_data'] = extracted if extracted is not None else {}
                     st.session_state['pending_duplicate'] = None 
                     
                     if st.session_state['draft_data']:
-                        st.success("Dati estratti!")
+                        st.success("Dati estratti! Compila i campi sottostanti.")
                     else:
-                        st.error("L'AI non ha prodotto un JSON valido.")
+                        st.error("L'AI non ha estratto dati validi.")
                 else:
-                    st.error("Testo insufficiente o illeggibile nel file.")
-
-    # --- DEBUGGER (Visibile solo se c'è qualcosa) ---
-    if st.session_state.get('debug_text'):
-        with st.expander("🛠️ Debug: Vedi cosa ha letto il sistema"):
-            st.markdown("**Testo Grezzo Letto dal File:**")
-            st.text(st.session_state['debug_text'][:1000] + "...") # Primi 1000 caratteri
-            st.divider()
-            st.markdown("**JSON Ricevuto dall'AI:**")
-            st.json(st.session_state.get('debug_json', {}))
+                    st.error("Testo insufficiente.")
 
     st.divider()
     st.markdown("### 2. Dettagli Format")
@@ -319,7 +324,7 @@ with tab2:
         draft = st.session_state.get('draft_data')
         if not isinstance(draft, dict): draft = {}
         
-        id_val = str(draft.get(id_col, ""))
+        id_val = draft.get(id_col, "")
         if id_val == "[[RIEMPIMENTO MANUALE]]":
             st.markdown(f":red[**⚠️ {id_col} MANCANTE**]")
             id_val = ""
@@ -328,13 +333,13 @@ with tab2:
         new_id = st.text_input(f"**{id_col} (UNICO)** *", value=id_val)
         
         for c in cols:
-            val = str(draft.get(c, "")) # Forza stringa per sicurezza
-            if "[[RIEMPIMENTO MANUALE]]" in val:
+            val = draft.get(c, "")
+            if "[[RIEMPIMENTO MANUALE]]" in str(val):
                 st.markdown(f":red[**⚠️ {c} MANCANTE**]")
                 val = ""
                 missing_fields.append(c)
             
-            if len(val) > 50:
+            if len(str(val)) > 50:
                 form_values[c] = st.text_area(f"**{c}**", value=val)
             else:
                 form_values[c] = st.text_input(f"**{c}**", value=val)
