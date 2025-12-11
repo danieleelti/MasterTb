@@ -13,6 +13,9 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 import difflib
 
+# --- CONFIGURAZIONE PAJINA (WIDE MODE) ---
+st.set_page_config(layout="wide", page_title="MasterTb Manager", page_icon="🦁")
+
 # --- CONFIGURAZIONE MODELLI FISSI ---
 SEARCH_MODEL = "models/gemini-2.5-flash-lite"
 DOC_MODEL = "models/gemini-3-pro-preview"
@@ -50,6 +53,7 @@ st.markdown("""
         border-radius: 10px;
         background-color: #f9f9f9;
         transition: all 0.2s ease-in-out;
+        padding: 10px;
     }
     .diff-box {
         padding: 10px;
@@ -60,12 +64,23 @@ st.markdown("""
     .old-val { background-color: #ffe6e6; color: #b30000; text-decoration: line-through; padding: 2px 5px; border-radius: 3px;}
     .new-val { background-color: #e6fffa; color: #006644; font-weight: bold; padding: 2px 5px; border-radius: 3px;}
     
-    /* Stile per l'area editabile verde */
     .stTextArea textarea[aria-label="Modifica Nuova Descrizione"] {
         background-color: #e6fffa;
         border: 2px solid #006644;
         color: #004d33;
     }
+    
+    /* Stile Card Risultati in Sidebar */
+    .result-card {
+        background-color: white;
+        padding: 10px;
+        border-radius: 5px;
+        border: 1px solid #eee;
+        margin-bottom: 8px;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    }
+    .result-title { font-weight: bold; font-size: 0.9em; margin-bottom: 4px; }
+    .result-preview { font-size: 0.8em; color: #666; margin-bottom: 8px; line-height: 1.2; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -79,6 +94,8 @@ if 'pending_duplicate' not in st.session_state:
     st.session_state['pending_duplicate'] = None
 if 'last_processed_file' not in st.session_state:
     st.session_state['last_processed_file'] = None
+if 'force_selection' not in st.session_state:
+    st.session_state['force_selection'] = None
 
 # Stato per modifiche in attesa di conferma
 if 'pending_changes' not in st.session_state:
@@ -257,164 +274,191 @@ def search_ai(query, dataframe):
         return ast.literal_eval(match.group(1)) if match else []
     except: return []
 
-# --- INTERFACCIA PRINCIPALE ---
+
+# ==========================================
+#              SIDEBAR CONTROL
+# ==========================================
+with st.sidebar:
+    st.title("🦁 Manager")
+    st.markdown("---")
+    
+    # 1. UPLOAD
+    st.subheader("1. 📂 Carica File")
+    uploaded_file = st.file_uploader("Trascina PDF o PPTX", type=['pdf', 'pptx', 'ppt'], label_visibility="collapsed")
+
+    # LOGICA AUTO-ANALISI (Triggerata qui ma salva in session state)
+    if uploaded_file:
+        file_id = f"{uploaded_file.name}_{uploaded_file.size}"
+        if st.session_state['last_processed_file'] != file_id:
+            with st.spinner("⚡ Analisi Gemini 3.0..."):
+                raw_text = read_file_content(uploaded_file)
+                st.session_state['debug_raw_text'] = raw_text 
+                
+                if len(raw_text) > 10:
+                    extracted = analyze_document_with_gemini(raw_text, [id_col] + cols)
+                    if isinstance(extracted, list): extracted = extracted[0] if extracted else {}
+                    if not isinstance(extracted, dict): extracted = {}
+
+                    # FUZZY MATCH
+                    extracted_name = str(extracted.get(id_col, "")).strip()
+                    matches = difflib.get_close_matches(extracted_name, product_ids, n=1, cutoff=0.85)
+                    
+                    if matches:
+                        existing_id = matches[0]
+                        st.toast(f"Trovato: {existing_id}", icon="🔄")
+                        
+                        current_data = df.loc[existing_id].to_dict()
+                        desc_col_name = "Descrizione Breve"
+                        for c in cols:
+                            if "descrizione" in c.lower():
+                                desc_col_name = c; break
+                        
+                        st.session_state['pending_duplicate'] = {
+                            'id': existing_id,
+                            'target_col': desc_col_name,
+                            'new_value': extracted.get(desc_col_name, ""),
+                            'old_value': current_data.get(desc_col_name, "")
+                        }
+                        st.session_state['draft_data'] = {}
+                    else:
+                        st.session_state['pending_duplicate'] = None
+                        st.session_state['draft_data'] = extracted if extracted else {}
+                        if st.session_state['draft_data']:
+                            st.toast("Nuovo format estratto!", icon="✨")
+                else:
+                    st.error("File illeggibile.")
+                st.session_state['last_processed_file'] = file_id
+    
+    st.markdown("---")
+
+    # 2. RICERCA
+    st.subheader("2. 🔎 Cerca (AI)")
+    q = st.text_input("Es. cucina, outdoor...", label_visibility="collapsed")
+    if st.button("Cerca Format", use_container_width=True):
+        if q:
+            with st.spinner("Ricerca..."):
+                res = search_ai(q, df)
+                st.session_state['search_results'] = [x for x in res if x in product_ids] if res else []
+
+    # RISULTATI RICERCA IN SIDEBAR (Cards)
+    if st.session_state['search_results']:
+        st.success(f"Trovati: {len(st.session_state['search_results'])}")
+        
+        desc_key = "Descrizione Breve"
+        for c in cols:
+            if "descrizione" in c.lower(): desc_key = c; break
+            
+        for rid in st.session_state['search_results']:
+            # Card style in sidebar
+            row_data = df.loc[rid]
+            preview = str(row_data.get(desc_key, ""))[:60] + "..."
+            
+            with st.container():
+                st.markdown(f"""
+                <div class="result-card">
+                    <div class="result-title">{rid}</div>
+                    <div class="result-preview">{preview}</div>
+                </div>
+                """, unsafe_allow_html=True)
+                if st.button("✏️ Modifica", key=f"btn_side_{rid}", use_container_width=True):
+                    st.session_state['force_selection'] = rid
+                    st.rerun()
+        
+        if st.button("❌ Reset Ricerca", use_container_width=True):
+            st.session_state['search_results'] = None
+            st.rerun()
+
+    st.markdown("---")
+
+    # 3. SELEZIONE MANUALE
+    st.subheader("3. 📝 Selezione")
+    # Logica per sincronizzare la scelta (Forzata dai bottoni o Manuale)
+    all_options = [""] + sorted(product_ids)
+    
+    # Determina indice
+    idx_sel = 0
+    if st.session_state['force_selection']:
+        if st.session_state['force_selection'] in all_options:
+            idx_sel = all_options.index(st.session_state['force_selection'])
+        st.session_state['force_selection'] = None # Reset dopo l'uso
+    
+    selected_id = st.selectbox("Scegli Format:", all_options, index=idx_sel, label_visibility="collapsed")
+    
+    # Modalità Creazione vs Modifica
+    is_new_mode = False
+    if st.session_state['draft_data'] and not st.session_state['pending_duplicate']:
+        is_new_mode = True
+        st.info("✏️ **CREAZIONE NUOVO**")
+        if st.button("Annulla Creazione", use_container_width=True):
+            st.session_state['draft_data'] = {}
+            st.session_state['pending_changes'] = None
+            st.session_state['last_processed_file'] = None
+            st.rerun()
+
+
+# ==========================================
+#              MAIN COLUMN
+# ==========================================
+
 st.title("🦁 MasterTb Manager")
 
-# 1. AREA UPLOAD
-uploaded_file = st.file_uploader("📂 Trascina qui PDF o PPTX per Analizzare/Creare", type=['pdf', 'pptx', 'ppt'])
-
-# --- LOGICA AUTO-ANALISI ---
-if uploaded_file:
-    file_id = f"{uploaded_file.name}_{uploaded_file.size}"
-    
-    if st.session_state['last_processed_file'] != file_id:
-        with st.spinner("⚡ Analisi automatica in corso con Gemini 3.0 Pro..."):
-            raw_text = read_file_content(uploaded_file)
-            st.session_state['debug_raw_text'] = raw_text 
-            
-            if len(raw_text) > 10:
-                extracted = analyze_document_with_gemini(raw_text, [id_col] + cols)
-                
-                if isinstance(extracted, list): extracted = extracted[0] if extracted else {}
-                if not isinstance(extracted, dict): extracted = {}
-
-                # FUZZY MATCH
-                extracted_name = str(extracted.get(id_col, "")).strip()
-                matches = difflib.get_close_matches(extracted_name, product_ids, n=1, cutoff=0.85)
-                
-                if matches:
-                    existing_id = matches[0]
-                    st.toast(f"Trovato esistente: {existing_id}", icon="🔄")
-                    
-                    current_data = df.loc[existing_id].to_dict()
-                    desc_col_name = "Descrizione Breve"
-                    for c in cols:
-                        if "descrizione" in c.lower():
-                            desc_col_name = c
-                            break
-                    
-                    new_desc = extracted.get(desc_col_name, "")
-                    
-                    st.session_state['pending_duplicate'] = {
-                        'id': existing_id,
-                        'target_col': desc_col_name,
-                        'new_value': new_desc,
-                        'old_value': current_data.get(desc_col_name, "")
-                    }
-                    st.session_state['draft_data'] = {}
-                else:
-                    st.session_state['pending_duplicate'] = None
-                    st.session_state['draft_data'] = extracted if extracted else {}
-                    if st.session_state['draft_data']:
-                        st.toast("Dati estratti per NUOVO format!", icon="✨")
-            else:
-                st.error("Testo insufficiente nel file.")
-            
-            st.session_state['last_processed_file'] = file_id
-
-# BOX AGGIORNAMENTO DUPLICATI CON EDITING
+# 1. BOX GESTIONE DUPLICATI (Priorità Alta)
 if st.session_state['pending_duplicate']:
-    st.divider()
     dup_data = st.session_state['pending_duplicate']
     dup_id = dup_data['id']
     target_col = dup_data.get('target_col', "Descrizione Breve")
     new_val_ai = dup_data.get('new_value', "")
     old_val = dup_data.get('old_value', "")
 
-    st.warning(f"⚠️ **ATTENZIONE:** Il format **'{dup_id}'** esiste già!")
-    st.markdown(f"**L'AI propone di aggiornare SOLO la colonna '{target_col}'**. Puoi modificare il testo verde prima di confermare.")
-    
-    col_diff1, col_diff2 = st.columns(2)
-    with col_diff1:
-        st.caption("🔴 Descrizione Attuale")
-        st.info(old_val if old_val else "(Vuoto)", icon="ℹ️")
-    with col_diff2:
-        st.caption("🟢 Nuova Descrizione (AI - Modificabile)")
-        # QUI LA MODIFICA: TEXT_AREA AL POSTO DI SUCCESS
-        edited_new_desc = st.text_area(
-            "Modifica Nuova Descrizione", 
-            value=new_val_ai, 
-            height=200, 
-            key="edit_dup_desc",
-            label_visibility="collapsed"
-        )
+    with st.container():
+        st.warning(f"⚠️ **RILEVATO FORMAT ESISTENTE: '{dup_id}'**")
+        st.markdown(f"L'AI propone di aggiornare solo la descrizione. Puoi modificarla qui sotto prima di salvare.")
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.caption("🔴 Descrizione Attuale")
+            st.info(old_val if old_val else "(Vuoto)", icon="ℹ️")
+        with c2:
+            st.caption("🟢 Nuova Descrizione (Modificabile)")
+            edited_new_desc = st.text_area(
+                "Modifica Nuova Descrizione", 
+                value=new_val_ai, 
+                height=200, 
+                key="edit_dup_desc",
+                label_visibility="collapsed"
+            )
 
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("🔄 AGGIORNA DESCRIZIONE", type="primary"):
-            try:
-                r_idx = product_ids.index(dup_id) + 2 
-                c_idx = cols.index(target_col) + 2
-                
-                # USIAMO IL VALORE EDITATO DALLA TEXTAREA
-                ws.update_cell(r_idx, c_idx, edited_new_desc)
-                
-                st.toast("Aggiornato con successo!", icon="✅")
+        b1, b2 = st.columns([1, 4])
+        with b1:
+            if st.button("🔄 AGGIORNA", type="primary", use_container_width=True):
+                try:
+                    r_idx = product_ids.index(dup_id) + 2 
+                    c_idx = cols.index(target_col) + 2
+                    ws.update_cell(r_idx, c_idx, edited_new_desc)
+                    st.toast("Aggiornato!", icon="✅")
+                    st.session_state['pending_duplicate'] = None
+                    st.session_state['last_processed_file'] = None 
+                    load_data.clear()
+                    st.rerun()
+                except Exception as e: st.error(f"Errore: {e}")
+        with b2:
+            if st.button("❌ IGNORA", use_container_width=True):
                 st.session_state['pending_duplicate'] = None
-                st.session_state['last_processed_file'] = None 
-                load_data.clear()
+                st.session_state['last_processed_file'] = None
                 st.rerun()
-            except Exception as e: st.error(f"Errore: {e}")
-    with c2:
-        if st.button("❌ ANNULLA"):
-            st.session_state['pending_duplicate'] = None
-            st.session_state['last_processed_file'] = None
-            st.rerun()
     st.divider()
 
-# 2. RICERCA
-st.markdown("### 🔎 Ricerca e Selezione")
-col_search, col_rst = st.columns([4, 1])
-with col_search:
-    q = st.text_input("Cerca Format (per contenuto, idea o nome)", placeholder="Es. ponte tibetano, cucina...")
-with col_rst:
-    st.write("")
-    st.write("")
-    if st.button("Vai"):
-        if q:
-            with st.spinner("Cerco format pertinenti..."):
-                res = search_ai(q, df)
-                valid_ids = [x for x in res if x in product_ids] if res else []
-                st.session_state['search_results'] = valid_ids if valid_ids else None
-                if not valid_ids: st.warning("Nessun risultato pertinente trovato.")
 
-if st.session_state['search_results'] is not None:
-    options = st.session_state['search_results']
-    st.info(f"Filtro AI attivo: {len(options)} format trovati.")
-    if st.button("Mostra Tutti"):
-        st.session_state['search_results'] = None
-        st.session_state['pending_changes'] = None
-        st.rerun()
-    # Ordiniamo anche i risultati della ricerca per comodità
-    options = [""] + sorted(options)
-else:
-    # QUI LA MODIFICA: ORDINIAMO LA LISTA PER PERMETTERE LA RICERCA VELOCE DA TASTIERA
-    options = [""] + sorted(product_ids)
-
-# 3. SELEZIONE
-is_new_mode = False
-if st.session_state['draft_data'] and not st.session_state['pending_duplicate']:
-    is_new_mode = True
-    st.info("✏️ **MODALITÀ CREAZIONE**: Stai modificando i dati estratti dal file caricato.")
-    if st.button("🔙 Annulla Creazione"):
-        st.session_state['draft_data'] = {}
-        st.session_state['pending_changes'] = None
-        st.session_state['last_processed_file'] = None
-        st.rerun()
-else:
-    # Selectbox ora usa 'options' che è ordinato alfabeticamente
-    # Scrivendo dentro il box, Streamlit filtrerà automaticamente
-    selected_id = st.selectbox("Seleziona Format da Modificare (Scrivi per cercare)", options, index=0)
-
-# 4. LOGICA "FOGLIO BIANCO"
+# 2. LOGICA "FOGLIO BIANCO"
+# Se non siamo in creazione (is_new_mode) E non abbiamo selezionato nulla
 if not is_new_mode and not selected_id:
-    st.info("👈 Seleziona un format dal menu o usa la ricerca per iniziare.")
-    st.stop() # FERMA IL CARICAMENTO QUI SE NON C'È SELEZIONE
+    st.info("👈 Usa la barra laterale per caricare un file, cercare o selezionare un format.")
+    st.stop()
 
-# 5. FORM
+
+# 3. FORM PRINCIPALE
 st.markdown("### 📝 Dettagli Format")
 
-# Logica sorgente dati
 if is_new_mode:
     source_data = st.session_state['draft_data']
     current_id_val = str(source_data.get(id_col, ""))
@@ -427,20 +471,20 @@ else:
 with st.form("master_form"):
     form_values = {}
     
-    # ID
+    # ID (Unico)
     if is_new_mode:
         new_id = st.text_input(f"**{id_col} (UNICO)**", value=current_id_val)
     else:
         st.text_input(f"**{id_col}**", value=current_id_val, disabled=True)
         new_id = current_id_val
 
-    # CAMPI
+    # Render dinamico campi
     for c in cols:
         val = str(source_data.get(c, ""))
         c_lower = c.lower()
         if "[[RIEMPIMENTO MANUALE]]" in val: val = ""
         
-        # Logica widget specifici
+        # Logiche Widget
         if "social" in c_lower or "novità" in c_lower or "novita" in c_lower:
             options_bool = ["NO", "SI"]
             idx_bool = 1 if ("si" in val.lower() or "yes" in val.lower()) else 0
@@ -470,11 +514,10 @@ with st.form("master_form"):
             else:
                 form_values[c] = st.text_input(f"**{c}**", value=val)
 
-    submitted = st.form_submit_button(submit_label)
+    submitted = st.form_submit_button(submit_label, type="primary")
 
     if submitted:
         changes = {}
-        # CALCOLO DIFFERENZE
         if is_new_mode:
             changes = {'_NEW_': True, 'id': new_id, 'data': form_values}
         else:
@@ -482,18 +525,16 @@ with st.form("master_form"):
                 original = str(source_data.get(k, ""))
                 if v != original:
                     changes[k] = {'old': original, 'new': v}
-            
         st.session_state['pending_changes'] = changes
 
-# 6. AREA DI CONFERMA (FUORI DAL FORM)
+# 4. CONFERMA (DIFF VIEW)
 if st.session_state['pending_changes']:
     st.divider()
     changes = st.session_state['pending_changes']
     
     if is_new_mode:
         st.info(f"✨ **STO CREANDO IL NUOVO FORMAT:** {changes['id']}")
-        st.write("Verifica i dati sopra. Se è tutto ok, procedi.")
-        if st.button("✅ CONFERMA E SCRIVI SU GOOGLE (Definitivo)", type="primary"):
+        if st.button("✅ CONFERMA E SCRIVI (Definitivo)", type="primary"):
             if not changes['id'].strip():
                 st.error("Manca ID!")
             elif changes['id'] in product_ids:
@@ -511,14 +552,14 @@ if st.session_state['pending_changes']:
                 except Exception as e: st.error(f"Errore: {e}")
 
     else:
-        # MODO EDIT
+        # EDIT MODE
         if not changes:
-            st.success("✅ Nessuna modifica rilevata rispetto al database.")
+            st.success("✅ Nessuna modifica rilevata.")
             if st.button("Chiudi"):
                 st.session_state['pending_changes'] = None
                 st.rerun()
         else:
-            st.warning("⚠️ **Rilevate Modifiche!** Controlla attentamente prima di salvare.")
+            st.warning("⚠️ **Rilevate Modifiche!** Controlla prima di salvare.")
             
             for k, v in changes.items():
                 st.markdown(f"""
@@ -546,6 +587,6 @@ if st.session_state['pending_changes']:
                         st.rerun()
                     except Exception as e: st.error(f"Errore: {e}")
             with c_no:
-                if st.button("❌ Annulla Modifiche"):
+                if st.button("❌ Annulla"):
                     st.session_state['pending_changes'] = None
                     st.rerun()
