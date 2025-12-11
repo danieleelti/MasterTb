@@ -70,6 +70,8 @@ if 'search_results' not in st.session_state:
     st.session_state['search_results'] = None
 if 'pending_duplicate' not in st.session_state:
     st.session_state['pending_duplicate'] = None
+if 'last_processed_file' not in st.session_state:
+    st.session_state['last_processed_file'] = None
 
 # Stato per modifiche in attesa di conferma
 if 'pending_changes' not in st.session_state:
@@ -254,9 +256,13 @@ st.title("🦁 MasterTb Manager")
 # 1. AREA UPLOAD
 uploaded_file = st.file_uploader("📂 Trascina qui PDF o PPTX per Analizzare/Creare", type=['pdf', 'pptx', 'ppt'])
 
+# --- LOGICA AUTO-ANALISI ---
 if uploaded_file:
-    if st.button("⚡ Analizza File"):
-        with st.spinner("Analisi con Gemini 3.0 Pro..."):
+    # Identificativo univoco del file per evitare loop
+    file_id = f"{uploaded_file.name}_{uploaded_file.size}"
+    
+    if st.session_state['last_processed_file'] != file_id:
+        with st.spinner("⚡ Analisi automatica in corso con Gemini 3.0 Pro..."):
             raw_text = read_file_content(uploaded_file)
             st.session_state['debug_raw_text'] = raw_text 
             
@@ -297,6 +303,9 @@ if uploaded_file:
                         st.toast("Dati estratti per NUOVO format!", icon="✨")
             else:
                 st.error("Testo insufficiente nel file.")
+            
+            # Segna come processato
+            st.session_state['last_processed_file'] = file_id
 
 # BOX AGGIORNAMENTO DUPLICATI
 if st.session_state['pending_duplicate']:
@@ -327,12 +336,14 @@ if st.session_state['pending_duplicate']:
                 ws.update_cell(r_idx, c_idx, new_val)
                 st.toast("Aggiornato!", icon="✅")
                 st.session_state['pending_duplicate'] = None
+                st.session_state['last_processed_file'] = None # Reset per permettere ricaricamento
                 load_data.clear()
                 st.rerun()
             except Exception as e: st.error(f"Errore: {e}")
     with c2:
         if st.button("❌ ANNULLA"):
             st.session_state['pending_duplicate'] = None
+            st.session_state['last_processed_file'] = None
             st.rerun()
     st.divider()
 
@@ -371,6 +382,7 @@ if st.session_state['draft_data'] and not st.session_state['pending_duplicate']:
     if st.button("🔙 Annulla Creazione"):
         st.session_state['draft_data'] = {}
         st.session_state['pending_changes'] = None
+        st.session_state['last_processed_file'] = None
         st.rerun()
 else:
     # IL SELECTBOX ORA PARTE VUOTO ("") GRAZIE ALLA PRIMA OPZIONE
@@ -479,6 +491,7 @@ if st.session_state['pending_changes']:
                     st.success("Salvato!")
                     st.session_state['draft_data'] = {}
                     st.session_state['pending_changes'] = None
+                    st.session_state['last_processed_file'] = None
                     load_data.clear()
                     st.rerun()
                 except Exception as e: st.error(f"Errore: {e}")
