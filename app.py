@@ -309,6 +309,14 @@ with tab2:
                 if len(raw_text) > 10:
                     extracted = analyze_document_with_gemini(raw_text, [id_col] + cols)
                     
+                    # --- SAFETY CHECK: FIX ATTRIBUTE ERROR ---
+                    # L'AI a volte ritorna una lista [ {...} ] o None se fallisce
+                    if isinstance(extracted, list):
+                        extracted = extracted[0] if extracted else {}
+                    if not isinstance(extracted, dict):
+                        extracted = {}
+                    # ----------------------------------------
+
                     # --- FUZZY MATCH LOGIC ---
                     extracted_name = str(extracted.get(id_col, "")).strip()
                     matches = difflib.get_close_matches(extracted_name, product_ids, n=1, cutoff=0.85)
