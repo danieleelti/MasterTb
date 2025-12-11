@@ -7,15 +7,17 @@ import ast
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
-# --- CONFIGURAZIONE INIZIALE ---
-# Questo è il nome che proveremo a usare di default.
-# Se fallisce, usa il tool nella sidebar per trovare il nome vero.
-DEFAULT_MODEL_NAME = 'models/gemini-1.5-flash' 
+# --- CONFIGURAZIONE ---
+# Default richiesto (con prefisso 'models/' per compatibilità SDK)
+DEFAULT_MODEL = "models/gemini-3-pro-preview" 
 
 # --- INIZIALIZZAZIONE STATO ---
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'token_usage' not in st.session_state: 
     st.session_state['token_usage'] = {'input': 0, 'output': 0, 'total': 0}
+# Stato per la lista modelli (parte con il default, poi si aggiorna con la scansione)
+if 'available_models' not in st.session_state:
+    st.session_state['available_models'] = [DEFAULT_MODEL]
 
 # --- 1. LOGIN ---
 if not st.session_state['logged_in']:
@@ -30,7 +32,7 @@ if not st.session_state['logged_in']:
                 st.error("Password errata")
     st.stop()
 
-# --- 2. CONNESSIONE ---
+# --- 2. CONNESSIONE GOOGLE SHEET ---
 ws = None
 @st.cache_resource
 def connect_to_sheet():
@@ -45,86 +47,61 @@ def connect_to_sheet():
 ws = connect_to_sheet()
 
 @st.cache_data(ttl=60)
-def get_data():
+def load_data():
     df = pd.DataFrame(ws.get_all_records())
     if not df.empty:
         df.columns = [c.strip() for c in df.columns]
         df.set_index(df.columns[0], inplace=True)
     return df
 
-df = get_data()
+df = load_data()
 if df.empty: st.stop()
 
 product_ids = [str(i) for i in df.index.tolist()]
 cols = df.columns.tolist()
 id_col = df.index.name
 
-# --- 3. TOOL DIAGNOSTICO (SIDEBAR) ---
-with st.sidebar:
-    st.header("🛠️ Diagnostica API")
-    
-    # Configura API Key globalmente per il test
-    if "GOOGLE_API_KEY" in st.secrets:
-        genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-        
-        if st.button("🔍 Scansiona Modelli Disponibili"):
-            try:
-                st.write("Interrogazione Google in corso...")
-                # Elenca solo i modelli che supportano 'generateContent'
-                models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                st.success(f"Trovati {len(models)} modelli!")
-                st.code("\n".join(models)) # Copia uno di questi nomi!
-            except Exception as e:
-                st.error(f"Errore Scansione: {e}")
-    else:
-        st.error("Manca API Key nei secrets")
-
-    st.markdown("---")
-    st.header("🔢 Token Sessione")
-    st.metric("Input", st.session_state['token_usage']['input'])
-    st.metric("Output", st.session_state['token_usage']['output'])
-    
-    if st.button("Reset Token"):
-        st.session_state['token_usage'] = {'input': 0, 'output': 0, 'total': 0}
-        st.rerun()
-
-# --- 4. FUNZIONE AI (Il tuo codice) ---
+# --- 3. FUNZIONE AI ---
 def search_ai(query, dataframe, model_name):
+    if "GOOGLE_API_KEY" not in st.secrets:
+        st.error("Manca API Key")
+        return []
+
+    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+    
+    # Preparazione Dati (Col 1 + Col 16)
+    all_cols = list(dataframe.columns)
+    target_col = all_cols[15] if len(all_cols) > 15 else all_cols[0]
+    
+    sub_df = dataframe[[target_col]]
+    context_str = sub_df.to_markdown(index=True)
+
+    sys_prompt = """
+    Sei un assistente di ricerca specializzato in format di team building.
+    Analizza la richiesta e il catalogo fornito (Nome Format + Descrizione).
+    Output: SOLO una lista Python di stringhe dei Nomi Format trovati. Es: ['Format A', 'Format B'].
+    Se nulla corrisponde: [].
+    """
+
+    # Configurazione Modello (Tuo codice esatto)
+    model = genai.GenerativeModel(
+        model_name=model_name,
+        generation_config={"temperature": 0.0},
+        system_instruction=sys_prompt,
+        safety_settings={
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+        }
+    )
+
+    full_prompt = f"CATALOGO:\n{context_str}\n\nRICHIESTA UTENTE: {query}"
+    
     try:
-        # Preparazione Dati (Col 1 + Col 16)
-        all_cols = list(dataframe.columns)
-        # Indice 15 = Colonna 16 (Descrizione Breve)
-        target_col = all_cols[15] if len(all_cols) > 15 else all_cols[0]
-        
-        # Creiamo un subset leggero
-        sub_df = dataframe[[target_col]]
-        context_str = sub_df.to_markdown(index=True)
-
-        system_prompt = """
-        Sei un assistente di ricerca specializzato in format di team building.
-        Analizza la richiesta e il catalogo fornito (Nome Format + Descrizione).
-        Output: SOLO una lista Python di stringhe dei Nomi Format trovati. Es: ['Format A'].
-        Se nulla corrisponde: [].
-        """
-
-        # Configurazione Modello (Tuo snippet esatto)
-        model = genai.GenerativeModel(
-            model_name=model_name,
-            generation_config={"temperature": 0.0},
-            system_instruction=system_prompt,
-            safety_settings={
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            },
-        )
-
-        full_prompt = f"CATALOGO:\n{context_str}\n\nRICHIESTA UTENTE: {query}"
-        
         response = model.generate_content(full_prompt)
         
-        # Conteggio
+        # Conteggio Token
         if response.usage_metadata:
             st.session_state['token_usage']['input'] += response.usage_metadata.prompt_token_count
             st.session_state['token_usage']['output'] += response.usage_metadata.candidates_token_count
@@ -133,56 +110,94 @@ def search_ai(query, dataframe, model_name):
         text = response.text.strip()
         match = re.search(r"(\[.*\])", text, re.DOTALL)
         return ast.literal_eval(match.group(1)) if match else []
-
+        
     except Exception as e:
-        # Mostra l'errore nudo e crudo per debug
         st.error(f"Errore API ({model_name}): {e}")
         return []
 
-# --- 5. INTERFACCIA PRINCIPALE ---
+# --- INTERFACCIA ---
 st.title("🦁 MasterTb Manager")
+
+# Sidebar Counter
+with st.sidebar:
+    st.header("🔢 Token")
+    st.metric("Totale", st.session_state['token_usage']['total'])
+    if st.button("Reset Token"):
+        st.session_state['token_usage'] = {'input': 0, 'output': 0, 'total': 0}
+        st.rerun()
 
 tab1, tab2, tab3 = st.tabs(["👁️ Cerca & Modifica", "➕ Nuovo Format", "📄 Doc AI"])
 
 with tab1:
-    # Selettore manuale per testare i nomi trovati con la diagnostica
-    # Ho messo 'gemini-3-pro-preview' come richiesto, ma puoi cambiarlo al volo se fallisce
-    model_to_use = st.text_input("Nome Modello (Copia dalla Sidebar)", value="gemini-1.5-flash")
+    # --- SEZIONE SCANNER MODELLI (CENTRALE) ---
+    col_scan, col_sel = st.columns([1, 3])
     
-    with st.form("search_form"):
-        q = st.text_input(f"Cerca {id_col}", placeholder="es. avventura outdoor")
-        btn = st.form_submit_button("Cerca con Gemini 🦁")
+    with col_scan:
+        if st.button("🔍 Scansiona Modelli"):
+            if "GOOGLE_API_KEY" in st.secrets:
+                genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+                try:
+                    # Trova modelli che supportano 'generateContent'
+                    models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                    if models:
+                        st.session_state['available_models'] = models
+                        st.toast(f"Trovati {len(models)} modelli!", icon="✅")
+                    else:
+                        st.error("Nessun modello trovato.")
+                except Exception as e:
+                    st.error(f"Errore Scan: {e}")
     
-    ids_show = product_ids
-    if btn and q:
-        with st.spinner("Ragionando..."):
-            res = search_ai(q, df, model_to_use)
-            if res:
-                ids_show = [x for x in res if x in product_ids]
-                if not ids_show: st.warning("Nessun match esatto nel DB.")
-            else:
-                st.warning("Nessun risultato.")
+    with col_sel:
+        # Il selectbox usa la lista nello stato, che si aggiorna con la scansione
+        # Se il default non è nella lista scansionata, viene aggiunto o gestito
+        index_default = 0
+        if DEFAULT_MODEL in st.session_state['available_models']:
+            index_default = st.session_state['available_models'].index(DEFAULT_MODEL)
+            
+        selected_model = st.selectbox(
+            "Seleziona Modello AI", 
+            st.session_state['available_models'],
+            index=index_default
+        )
 
-    sel = st.selectbox(f"Seleziona {id_col}", ids_show)
+    st.divider()
+
+    # --- RICERCA ---
+    with st.form("search_ai"):
+        query = st.text_input("Cosa stai cercando?", placeholder="Es: attività all'aperto economiche")
+        cerca_btn = st.form_submit_button("Cerca con Gemini 🦁")
+
+    ids_to_show = product_ids
     
-    if sel:
-        row = df.loc[sel]
+    if cerca_btn and query:
+        with st.spinner(f"Sto chiedendo a {selected_model}..."):
+            res = search_ai(query, df, selected_model)
+            if res:
+                ids_to_show = [x for x in res if x in product_ids]
+                if not ids_to_show: st.warning("Trovati risultati ma non presenti nel DB attuale.")
+            else:
+                st.warning("Nessun risultato o errore API.")
+
+    sel_id = st.selectbox(f"Seleziona {id_col}", ids_to_show)
+    
+    if sel_id:
+        row = df.loc[sel_id]
         with st.form("edit"):
-            st.subheader(f"Modifica: {sel}")
+            st.markdown(f"### Modifica: {sel_id}")
             new_vals = {}
             for c in cols:
-                v = str(row[c])
-                if len(v) > 50: new_vals[c] = st.text_area(c, v)
-                else: new_vals[c] = st.text_input(c, v)
+                val = str(row[c])
+                if len(val) > 60: new_vals[c] = st.text_area(c, val)
+                else: new_vals[c] = st.text_input(c, val)
             
             if st.form_submit_button("Salva Modifiche"):
-                for c, nv in new_vals.items():
-                    if str(row[c]) != nv:
-                        # Update logic
-                        r = product_ids.index(sel) + 2
-                        ci = cols.index(c) + 1
-                        ws.update_cell(r, ci, nv)
+                for c, v in new_vals.items():
+                    if str(row[c]) != v:
+                        r_idx = product_ids.index(sel_id) + 2 
+                        c_idx = cols.index(c) + 1
+                        ws.update_cell(r_idx, c_idx, v)
                         st.toast(f"Aggiornato {c}")
+                load_data.clear()
                 st.rerun()
 
 with tab2:
@@ -196,6 +211,7 @@ with tab2:
             else:
                 ws.append_row([d[c] for c in cols])
                 st.success("Fatto")
+                load_data.clear()
                 st.rerun()
 
 with tab3:
