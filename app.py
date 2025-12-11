@@ -200,15 +200,31 @@ def search_ai(query, dataframe):
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     
     context_str = dataframe.to_markdown(index=True)
-    sys_prompt = "Sei un assistente di ricerca. Output: SOLO lista Python Nomi Format. Es: ['Nome A']."
+    
+    # --- PROMPT DI RICERCA SEMANTICA "PENSANTE" ---
+    sys_prompt = """
+    Sei un Senior Event Manager esperto in Team Building e Formazione Aziendale.
+    
+    Il tuo compito è analizzare la RICHIESTA dell'utente e trovare nel CATALOGO i format più pertinenti.
+    
+    ISTRUZIONI DI RAGIONAMENTO (THINKING PROCESS):
+    1. Analizza la richiesta dell'utente. Se scrive termini specifici (es. "ponte tibetano"), astrai il concetto (es. "Attività Outdoor", "Adrenalina", "Natura", "Coraggio").
+    2. Cerca nel CATALOGO non solo per parole chiave esatte, ma per ASSOCIAZIONE DI IDEE.
+       - Es: "Ponte Tibetano" -> Cerca format che contengono "Outdoor", "Adventure Park", "Survival", "Mountain".
+       - Es: "Cucina" -> Cerca "Masterchef", "Cooking", "Wine".
+    3. Restituisci i NOMI DEI FORMAT (l'ID della prima colonna) che soddisfano meglio la richiesta, anche se la parola esatta non c'è.
+    
+    Output: SOLO una lista Python di stringhe. Es: ['Nome Format 1', 'Nome Format 2'].
+    Nessun altro testo o spiegazione.
+    """
     
     model = genai.GenerativeModel(
         model_name=SEARCH_MODEL, # Fissato a Gemini 2.5 Flash
-        generation_config={"temperature": 0.0}, 
+        generation_config={"temperature": 0.1}, # Leggera temp per permettere associazioni creative
         system_instruction=sys_prompt
     )
     try:
-        response = model.generate_content(f"CATALOGO:\n{context_str}\n\nRICHIESTA: {query}")
+        response = model.generate_content(f"CATALOGO:\n{context_str}\n\nRICHIESTA UTENTE: {query}")
         if response.usage_metadata:
             st.session_state['token_usage']['total'] += response.usage_metadata.total_token_count
         
@@ -311,22 +327,22 @@ if st.session_state['pending_duplicate']:
 st.markdown("### 🔎 Ricerca e Selezione")
 col_search, col_rst = st.columns([4, 1])
 with col_search:
-    q = st.text_input("Cerca Format (per contenuto o nome)", placeholder="Es. cooking class, outdoor...")
+    q = st.text_input("Cerca Format (per contenuto, idea o nome)", placeholder="Es. ponte tibetano, cucina, investigazione...")
 with col_rst:
     st.write("")
     st.write("")
     if st.button("Vai"):
         if q:
-            with st.spinner("Cerco con Gemini 2.5..."):
+            with st.spinner("Cerco format pertinenti..."):
                 res = search_ai(q, df)
                 valid_ids = [x for x in res if x in product_ids] if res else []
                 st.session_state['search_results'] = valid_ids if valid_ids else None
-                if not valid_ids: st.warning("Nessun risultato.")
+                if not valid_ids: st.warning("Nessun risultato pertinente trovato.")
 
 # Gestione opzioni selectbox
 if st.session_state['search_results'] is not None:
     options = st.session_state['search_results']
-    st.info(f"Filtro attivo: {len(options)} risultati.")
+    st.info(f"Filtro AI attivo: {len(options)} format trovati per '{q}'.")
     if st.button("Mostra Tutti"):
         st.session_state['search_results'] = None
         st.rerun()
