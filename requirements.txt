@@ -4,3 +4,4 @@ google-genai
 gspread
 oauth2client
 pytz
+tabulate
