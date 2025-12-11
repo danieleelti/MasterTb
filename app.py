@@ -286,7 +286,7 @@ with st.sidebar:
     st.subheader("1. 📂 Carica File")
     uploaded_file = st.file_uploader("Trascina PDF o PPTX", type=['pdf', 'pptx', 'ppt'], label_visibility="collapsed")
 
-    # LOGICA AUTO-ANALISI (Triggerata qui ma salva in session state)
+    # LOGICA AUTO-ANALISI
     if uploaded_file:
         file_id = f"{uploaded_file.name}_{uploaded_file.size}"
         if st.session_state['last_processed_file'] != file_id:
@@ -319,6 +319,8 @@ with st.sidebar:
                             'new_value': extracted.get(desc_col_name, ""),
                             'old_value': current_data.get(desc_col_name, "")
                         }
+                        # IMPORTANTISSIMO: Forza la selezione del format trovato per mostrarlo nel main
+                        st.session_state['force_selection'] = existing_id
                         st.session_state['draft_data'] = {}
                     else:
                         st.session_state['pending_duplicate'] = None
@@ -372,15 +374,14 @@ with st.sidebar:
 
     # 3. SELEZIONE MANUALE
     st.subheader("3. 📝 Selezione")
-    # Logica per sincronizzare la scelta (Forzata dai bottoni o Manuale)
     all_options = [""] + sorted(product_ids)
     
-    # Determina indice
+    # Determina indice (Priorità: Force Selection > Session State > 0)
     idx_sel = 0
     if st.session_state['force_selection']:
         if st.session_state['force_selection'] in all_options:
             idx_sel = all_options.index(st.session_state['force_selection'])
-        st.session_state['force_selection'] = None # Reset dopo l'uso
+        st.session_state['force_selection'] = None # Consuma la selezione forzata
     
     selected_id = st.selectbox("Scegli Format:", all_options, index=idx_sel, label_visibility="collapsed")
     
@@ -402,7 +403,7 @@ with st.sidebar:
 
 st.title("🦁 MasterTb Manager")
 
-# 1. BOX GESTIONE DUPLICATI (Priorità Alta)
+# 1. BOX GESTIONE DUPLICATI (Aggiornamento Rapido)
 if st.session_state['pending_duplicate']:
     dup_data = st.session_state['pending_duplicate']
     dup_id = dup_data['id']
@@ -436,27 +437,36 @@ if st.session_state['pending_duplicate']:
                     c_idx = cols.index(target_col) + 2
                     ws.update_cell(r_idx, c_idx, edited_new_desc)
                     st.toast("Aggiornato!", icon="✅")
+                    
+                    # RESET STATI MA NON LAST_PROCESSED_FILE (Per evitare loop analisi)
                     st.session_state['pending_duplicate'] = None
-                    st.session_state['last_processed_file'] = None 
+                    # Lasciamo st.session_state['last_processed_file'] com'è
+                    
                     load_data.clear()
                     st.rerun()
                 except Exception as e: st.error(f"Errore: {e}")
         with b2:
             if st.button("❌ IGNORA", use_container_width=True):
                 st.session_state['pending_duplicate'] = None
-                st.session_state['last_processed_file'] = None
+                # Se ignora, non resettiamo il file, così non riparte l'analisi
                 st.rerun()
     st.divider()
 
 
-# 2. LOGICA "FOGLIO BIANCO"
-# Se non siamo in creazione (is_new_mode) E non abbiamo selezionato nulla
-if not is_new_mode and not selected_id:
+# 2. LOGICA VISIBILITÀ FORM
+# Mostra il form se siamo in New Mode OPPURE se c'è un ID selezionato (che ora viene forzato se c'è un duplicato)
+show_form = False
+if is_new_mode:
+    show_form = True
+elif selected_id:
+    show_form = True
+
+if not show_form:
     st.info("👈 Usa la barra laterale per caricare un file, cercare o selezionare un format.")
     st.stop()
 
 
-# 3. FORM PRINCIPALE
+# 3. FORM PRINCIPALE (SCHEDA COMPLETA)
 st.markdown("### 📝 Dettagli Format")
 
 if is_new_mode:
