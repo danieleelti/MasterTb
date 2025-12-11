@@ -9,11 +9,10 @@ import ast
 from google.genai.types import HarmCategory, HarmBlockThreshold 
 
 # --- IMPOSTAZIONE MODELLO FISSO DI RIFERIMENTO ---
-# Modello stabile ad alte prestazioni per superare i blocchi 429 sul modello Preview.
-SELECTED_AI_MODEL = 'gemini-2.5-pro'
+# Impostato esattamente come appare nella dashboard del tuo account Google AI.
+SELECTED_AI_MODEL = 'gemini-3-pro' 
 
 # --- PROMPT DI SISTEMA FISSO ---
-# Istruzioni fisse che definiscono il ruolo del modello e l'output richiesto.
 FULL_SYSTEM_PROMPT = """
 Sei un assistente di ricerca specializzato in format di team building. Analizza la richiesta e il catalogo fornito.
 ISTRUZIONI PER L'OUTPUT:
@@ -138,7 +137,7 @@ def add_new_row(new_data):
 @st.cache_data(show_spinner="Ricerca semantica in corso...")
 def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_id_col_name: str) -> list[str]:
     """
-    Usa Gemini per eseguire una ricerca semantica basata sulla query, usando la sintassi API universale.
+    Usa Gemini per eseguire una ricerca semantica basata sulla query.
     Restituisce una lista di nomi di formati pertinenti.
     """
     
@@ -148,17 +147,19 @@ def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_i
             
         client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
         
-        # --- Seleziona SOLO Colonna 1 (Nome Format) e Colonna 16 (Descrizione Breve) ---
+        # --- PREPARAZIONE CONTESTO OTTIMIZZATO (Colonna 1 + Colonna 16) ---
         all_column_names = list(catalogue_df.columns)
         
-        # Colonna 16 = Indice 15 (Descrizione Breve).
+        # Indice 15 è la colonna 16 (Descrizione Breve) - Python è 0-based
         if len(all_column_names) >= 15: 
             col_16_name = all_column_names[15] 
+            # Crea un sotto-DataFrame con l'indice (Nome Format) e la Descrizione Breve
             sub_df = catalogue_df[[col_16_name]] 
             catalogue_string = sub_df.to_markdown(index=True)
         else:
+            # Fallback se la tabella ha meno colonne del previsto
             catalogue_string = catalogue_df.to_markdown(index=True)
-        # --- FINE MODIFICA ---
+        # --- FINE PREPARAZIONE ---
 
         # Costruisco il prompt completo
         full_prompt_text = (
@@ -191,7 +192,7 @@ def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_i
             ]
         )
         
-        # Chiamata API compatibile con tutte le versioni di google-genai
+        # Chiamata API usando il modello richiesto
         response = client.models.generate_content(
             model=SELECTED_AI_MODEL, 
             contents=full_prompt_text,
@@ -220,7 +221,6 @@ def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_i
             return []
 
     except Exception as e:
-        # In caso di errore API, ritorna una lista vuota
         st.error(f"Errore durante la chiamata a Gemini: {e}")
         return []
 
@@ -251,10 +251,10 @@ tab_view_edit, tab_add_format, tab_pdf_ppt = st.tabs([
 with tab_view_edit:
     st.header("Visualizza e Modifica un Formato Esistente")
     
-    # --- INFORMAZIONE SUL MODELLO FISSO (NIENTE SELETTORE) ---
-    st.info(f"Modello AI in uso (Fisso): **{SELECTED_AI_MODEL}** (Contesto di ricerca limitato a {product_id_col_name} + Descrizione Breve)")
+    # --- INFORMAZIONE SUL MODELLO FISSO ---
+    st.info(f"Modello AI in uso (Fisso): **{SELECTED_AI_MODEL}**")
+    st.caption("Contesto di ricerca ottimizzato: 'Nome Format' + 'Descrizione Breve'")
     st.markdown("---")
-    # --- FINE INFORMAZIONE MODELLO ---
 
     search_query = st.text_input(
         f"Cerca il **{product_id_col_name}** con l'AI:", 
@@ -274,21 +274,21 @@ with tab_view_edit:
             
         
         if gemini_results:
-            # Filtra solo gli ID che esistono effettivamente nel catalogo (per sicurezza)
+            # Filtra solo gli ID che esistono effettivamente nel catalogo
             filtered_ids = [id for id in gemini_results if id in product_ids]
             
             if not filtered_ids and gemini_results:
-                 st.warning(f"L'AI ha identificato i seguenti format: {', '.join(gemini_results)}, ma non sono stati trovati nel catalogo (problema di corrispondenza esatta dei nomi).")
+                 st.warning(f"L'AI ha identificato: {', '.join(gemini_results)}, ma non trovati nel catalogo.")
         
         if not gemini_results:
-            # Fallback alla ricerca testuale standard se l'AI non trova nulla
+            # Fallback alla ricerca testuale standard
             filtered_ids = [id for id in product_ids if search_query.lower() in id.lower()]
             
             if filtered_ids:
                  st.info("Ricerca semantica non riuscita, mostra risultati per corrispondenza testuale.")
 
             
-    # Se la ricerca è vuota, usiamo l'elenco completo per la selezione iniziale
+    # Se la ricerca è vuota, usiamo l'elenco completo
     if not search_query:
         filtered_ids = product_ids
         
@@ -338,7 +338,6 @@ with tab_view_edit:
                 changes_made = False
                 st.info("Inizio l'aggiornamento...")
                 
-                # Itera sui valori e aggiorna solo quelli che sono cambiati
                 for column, new_val in new_values.items():
                     old_val = str(product_data[column]) if pd.notna(product_data[column]) else ""
                     
@@ -399,7 +398,6 @@ with tab_add_format:
 with tab_pdf_ppt:
     st.header("Automazione del Riempimento tramite Documento (PDF/PPT)")
     
-    # Mostra quale modello è in uso
     st.info(f"Il modello selezionato per l'analisi è: **{SELECTED_AI_MODEL}**. Dovremo installare le librerie necessarie per leggere i file.")
     
     st.markdown("""
