@@ -2,96 +2,107 @@ import streamlit as st
 import gspread
 import pandas as pd
 import json
-from io import StringIO
-import re # Aggiunto per pulizia stringhe
+import re
+
+# --- Variabile Globale per la Connessione ---
+# La variabile che conterrà il nostro oggetto Worksheet
+ws = None 
 
 # --- Configurazione e Connessione a Google Sheets ---
 
-# Usiamo st.cache_resource per mantenere la connessione aperta tra le esecuzioni.
+# @st.cache_resource mantiene la connessione (l'oggetto Worksheet) attiva e non ricaricata.
+# Non deve avere parametri non hashable.
 @st.cache_resource
 def connect_to_sheet():
     """Stabilisce la connessione con Google Sheets tramite le credenziali."""
     try:
-        # Carica le credenziali dai secrets di Streamlit
+        # Carica le credenziali dai secrets di Streamlit (gcp_service_account)
         credentials_json = st.secrets["gcp_service_account"]
         
         # Connessione
         gc = gspread.service_account_from_dict(credentials_json)
         
-        # Apri il foglio di lavoro
+        # Apri il foglio di lavoro (Spreadsheet)
         spreadsheet_name = "MasterTbGoogleAi"
-        st.caption(f"Tentativo di connessione al foglio: **Master_GoogleAi**")
+        st.caption(f"Tentativo di connessione al file: **{spreadsheet_name}**")
         sh = gc.open(spreadsheet_name)
         
-        # Supponiamo che la tabella sia nel primo foglio (Worksheet)
-        # *** Importante: verifica il nome esatto del tuo foglio se non è 'Foglio1' ***
-        worksheet = sh.worksheet("Master_GoogleAi") 
+        # Accesso al primo foglio di lavoro (Worksheet) per evitare problemi di naming
+        # Se preferisci usare il nome "Master_GoogleAi", usa: sh.worksheet("Master_GoogleAi")
+        worksheet = sh.get_worksheet(0) 
         
         return worksheet
     except Exception as e:
-        st.error(f"Errore di connessione a Google Sheets. Verifica le credenziali e che il foglio 'MasterTbGoogleAi' esista e sia condiviso con l'email del Service Account. Dettagli: {e}")
+        st.error(f"❌ Errore di connessione a Google Sheets. Verifica: 1. Le credenziali nei secrets. 2. Che il file '{spreadsheet_name}' sia condiviso con l'email del Service Account. Dettagli: {e}")
         st.stop()
 
-# Connessione al foglio di lavoro
-ws = connect_to_sheet()
+# --- Inizializzazione della Connessione (Risorsa) ---
+# Chiamata all'avvio dell'app per inizializzare la risorsa 'ws'
+try:
+    ws = connect_to_sheet()
+except st.runtime.scriptrunner.StopException:
+    # Ferma l'esecuzione se la connessione fallisce
+    st.stop()
 
 # --- Funzioni di Interazione con Google Sheets ---
 
-@st.cache_data(ttl=60) # Caching per non ricaricare i dati ad ogni interazione
-def get_all_records(worksheet):
-    """Recupera tutti i record dal foglio di lavoro."""
-    data = worksheet.get_all_records()
-    df = pd.DataFrame(data)
-    # Imposta la prima colonna (che è "Nome Format") come indice
-    if not df.empty:
-        # Pulisce i nomi delle colonne da spazi bianchi e caratteri non voluti per maggiore sicurezza
-        df.columns = [col.strip() for col in df.columns]
-        # La prima colonna è l'ID/Nome Prodotto
-        df.set_index(df.columns[0], inplace=True) 
-    return df
+# @st.cache_data memorizza i dati (il DataFrame) per un accesso rapido.
+# Non deve accettare parametri non hashable come l'oggetto 'ws'.
+@st.cache_data(ttl=60) 
+def get_all_records():
+    """Recupera tutti i record dal foglio di lavoro usando la connessione globale 'ws'."""
+    try:
+        data = ws.get_all_records()
+        df = pd.DataFrame(data)
+        
+        if not df.empty:
+            # Pulisce i nomi delle colonne da spazi bianchi
+            df.columns = [col.strip() for col in df.columns]
+            # La prima colonna è l'ID/Nome Prodotto ("Nome Format")
+            df.set_index(df.columns[0], inplace=True) 
+            
+        return df
+    except Exception as e:
+        st.error(f"Errore nel recupero dei dati: {e}. Controlla che la prima riga contenga i tuoi header.")
+        return pd.DataFrame() # Ritorna un DataFrame vuoto in caso di errore
 
-def update_cell(worksheet, product_id, column_name, new_value, df_columns):
+def update_cell(product_id, column_name, new_value):
     """Aggiorna una singola cella nel foglio di lavoro."""
     try:
-        # Prendiamo tutti i valori per trovare l'indice esatto
-        all_values = worksheet.get_all_values()
+        # Recupera tutti i valori per trovare indici (più affidabile)
+        all_values = ws.get_all_values()
         
-        # 1. Troviamo la riga
+        # 1. Trova la riga
         row_index = -1
-        # Assumiamo che l'ID sia nella prima colonna
-        product_id_col_name = all_values[0][0] # Nome della prima colonna (e quindi l'ID)
-        
         for i, row in enumerate(all_values):
-            # i+1 è l'indice 1-based in gspread, usiamo la prima colonna per il match
+            # Assumiamo che l'ID sia nella prima colonna (indice 0)
             if row and row[0] == product_id:
-                row_index = i + 1 
+                row_index = i + 1 # gspread usa indici 1-based (riga 1 è l'header)
                 break
         
         if row_index == -1:
-            return False, f"ID Prodotto '{product_id}' non trovato nel foglio."
+            return False, f"ID Prodotto '{product_id}' non trovato."
 
         # 2. Trova la colonna
-        header = [col.strip() for col in all_values[0]] # Pulisci l'header
+        header = [col.strip() for col in all_values[0]] 
         col_index = -1
         try:
-            # +1 perché gspread è 1-based
-            col_index = header.index(column_name) + 1 
+            col_index = header.index(column_name) + 1 # gspread usa indici 1-based
         except ValueError:
              return False, f"Colonna '{column_name}' non trovata nell'header."
         
         # 3. Aggiorna la cella
-        worksheet.update_cell(row_index, col_index, new_value)
+        ws.update_cell(row_index, col_index, new_value)
         return True, "Aggiornamento riuscito!"
         
     except Exception as e:
         return False, f"Errore durante l'aggiornamento: {e}"
 
-def add_new_row(worksheet, new_data, product_id_col_name):
+def add_new_row(new_data):
     """Aggiunge una nuova riga al foglio di lavoro."""
     try:
-        # Inserisce la riga alla fine
-        # len(worksheet.col_values(1)) è il numero di righe attuali (compreso l'header)
-        worksheet.insert_row(new_data, index=len(worksheet.col_values(1)) + 1)
+        # Inserisce la riga alla fine del foglio
+        ws.insert_row(new_data, index=len(ws.col_values(1)) + 1)
         return True, "Nuovo formato aggiunto con successo!"
     except Exception as e:
         return False, f"Errore nell'aggiunta del formato: {e}"
@@ -100,16 +111,17 @@ def add_new_row(worksheet, new_data, product_id_col_name):
 
 st.title("🤖 Agente Gestore Prodotti Team Building (Google Sheets)")
 
-# Carica i dati una volta
-df = get_all_records(ws)
+
+# Carica i dati (la funzione ora non ha argomenti)
+df = get_all_records()
 
 if df.empty:
-    st.warning("Il foglio di lavoro è vuoto o non è stato possibile caricare i dati (potrebbe mancare l'header). Assicurati che il tuo foglio contenga le colonne specificate.")
+    st.warning("Il foglio di lavoro è vuoto o non è stato possibile caricare i dati.")
     st.stop()
 
 product_ids = [str(id) for id in df.index.tolist()]
 column_names = df.columns.tolist()
-product_id_col_name = df.index.name # Recupera "Nome Format"
+product_id_col_name = df.index.name # Recupera "Nome Format" (la prima colonna)
 
 # TABS: Per separare le funzionalità
 tab_view_edit, tab_add_format, tab_pdf_ppt = st.tabs([
@@ -131,7 +143,6 @@ with tab_view_edit:
         st.subheader(f"Dettagli di: **{selected_product_id}**")
         product_data = df.loc[selected_product_id]
         
-        # Mostra i dati in una lista per la visualizzazione e modifica
         with st.form("edit_form"):
             st.markdown("---")
             new_values = {}
@@ -140,8 +151,8 @@ with tab_view_edit:
             for column in column_names:
                 current_value = str(product_data[column]) if pd.notna(product_data[column]) else ""
                 
-                # Usiamo un text_area se il contenuto è lungo, altrimenti un text_input
-                if len(current_value) > 50 or '\n' in current_value:
+                # Usa text_area per campi potenzialmente lunghi
+                if len(current_value) > 80 or '\n' in current_value or column not in ['Max Pax', 'Durata Min', 'Durata Max']:
                     new_value = st.text_area(f"**{column}**", value=current_value, key=f"edit_{column}")
                 else:
                     new_value = st.text_input(f"**{column}**", value=current_value, key=f"edit_{column}")
@@ -159,12 +170,10 @@ with tab_view_edit:
                     old_val = str(product_data[column]) if pd.notna(product_data[column]) else ""
                     
                     if str(old_val).strip() != str(new_val).strip():
-                        # L'indice della colonna nel dataframe è 0-based, ma la funzione update_cell
-                        # ha bisogno del nome della colonna
-                        success, message = update_cell(ws, selected_product_id, column, new_val, column_names)
+                        success, message = update_cell(selected_product_id, column, new_val)
                         
                         if success:
-                            st.success(f"✔️ Aggiornato **{column}** a: *{new_val[:50]}...*")
+                            st.success(f"✔️ Aggiornato **{column}**")
                             changes_made = True
                         else:
                             st.error(f"❌ Errore aggiornamento {column}: {message}")
@@ -173,25 +182,23 @@ with tab_view_edit:
                     st.warning("Nessuna modifica rilevata. Niente da salvare.")
                 else:
                     st.balloons()
-                    # Forza la ricarica dei dati per aggiornare la cache
+                    # Forza la ricarica dei dati (svuota la cache) e ricarica l'app
                     get_all_records.clear()
-                    st.experimental_rerun() # Ricarica l'app per mostrare i dati aggiornati
+                    st.experimental_rerun()
             
 
 # --- TAB 2: Aggiungi Nuovo Formato ---
 with tab_add_format:
     st.header("Aggiungi un Nuovo Formato (Riga)")
     
-    st.info(f"Saranno elencati tutti i campi. Il primo campo, **{product_id_col_name}**, deve essere unico e compilato.")
+    st.info(f"Devi riempire tutti i campi. Il campo **{product_id_col_name}** deve essere unico.")
     
     with st.form("add_form"):
         new_row_data = {}
         for column in column_names:
-            # Il primo campo (l'ID: "Nome Format") è cruciale e deve essere univoco
             if column == product_id_col_name:
                 new_row_data[column] = st.text_input(f"**{column} (ID/Nome Formato UNICO)** *", key=f"add_{column}")
             else:
-                # Usa text_area per tutti gli altri campi per permettere più testo
                 new_row_data[column] = st.text_area(f"**{column}**", key=f"add_{column}")
         
         submitted_add = st.form_submit_button("Aggiungi Riga/Formato 🚀")
@@ -202,17 +209,17 @@ with tab_add_format:
             if not first_col_val:
                 st.error(f"Il campo **{product_id_col_name}** è obbligatorio.")
             elif first_col_val in product_ids:
-                st.error(f"Il **{product_id_col_name}** '{first_col_val}' esiste già. Scegline uno unico.")
+                st.error(f"Il **{product_id_col_name}** '{first_col_val}' esiste già.")
             else:
                 # Prepara la lista di valori da inserire (nell'ordine delle colonne)
                 values_to_insert = [new_row_data[col] for col in column_names]
                 
-                success, message = add_new_row(ws, values_to_insert, product_id_col_name)
+                success, message = add_new_row(values_to_insert)
                 
                 if success:
                     st.success(message)
                     st.balloons()
-                    # Pulisci la cache e ricarica
+                    # Pulisci la cache e ricarica l'app
                     get_all_records.clear()
                     st.experimental_rerun()
                 else:
@@ -223,18 +230,18 @@ with tab_add_format:
 with tab_pdf_ppt:
     st.header("Automazione del Riempimento tramite Documento (PDF/PPT)")
     
-    st.warning("⚠️ Questa è la fase 3 e richiede l'integrazione con un modello di AI (LLM) per l'estrazione delle informazioni. Procediamo ora con l'analisi e l'estrazione automatizzata.")
+    st.info("Siamo pronti per implementare l'integrazione con Gemini (LLM) per estrarre i dati automaticamente dai tuoi documenti e riempire i campi del foglio.")
     
-    st.markdown(f"""
-        L'obiettivo è estrarre in automatico i seguenti campi dal tuo documento:
-        
-        - **{product_id_col_name}**
-        - **Tipologia**
-        - **Logistica**
-        - ... e tutti gli altri **{len(column_names)}** campi.
+    st.markdown("""
+        Per proseguire, avremo bisogno di:
+        1.  Installare le librerie per la lettura dei documenti (es. `pypdf`).
+        2.  Ottenere la tua chiave **Gemini API Key** e aggiungerla ai Streamlit Secrets.
+        3.  Scrivere la logica per inviare il testo estratto a Gemini e chiedere l'output nel formato esatto delle tue colonne.
     """)
     
-    # Placeholder per il caricamento
-    # uploaded_file = st.file_uploader("Carica un file PDF o PPT per l'analisi:", type=["pdf", "pptx"])
+    # --- Placeholder per l'integrazione AI ---
+    st.subheader("Fase AI: Estrazione Dati")
+    # uploaded_file = st.file_uploader("Carica un file PDF o PPT:", type=["pdf", "pptx"])
     # if uploaded_file:
-    #     st.info("Pronto per l'analisi AI...")
+    #     # La logica di estrazione e chiamata a Gemini andrà qui
+    #     st.warning("Funzionalità in attesa di implementazione.")
