@@ -3,6 +3,8 @@ import gspread
 import pandas as pd
 import json
 import re
+from google import genai
+from google.genai import types
 
 # --- Variabile Globale per la Connessione ---
 ws = None 
@@ -52,8 +54,6 @@ def update_cell(product_id, column_name, new_value):
     """Aggiorna una singola cella nel foglio di lavoro."""
     try:
         all_values = ws.get_all_values()
-        
-        # 1. Trova la riga
         row_index = -1
         for i, row in enumerate(all_values):
             if row and row[0] == product_id:
@@ -63,7 +63,6 @@ def update_cell(product_id, column_name, new_value):
         if row_index == -1:
             return False, f"ID Prodotto '{product_id}' non trovato."
 
-        # 2. Trova la colonna
         header = [col.strip() for col in all_values[0]] 
         col_index = -1
         try:
@@ -71,7 +70,6 @@ def update_cell(product_id, column_name, new_value):
         except ValueError:
              return False, f"Colonna '{column_name}' non trovata nell'header."
         
-        # 3. Aggiorna la cella
         ws.update_cell(row_index, col_index, new_value)
         return True, "Aggiornamento riuscito!"
         
@@ -86,10 +84,76 @@ def add_new_row(new_data):
     except Exception as e:
         return False, f"Errore nell'aggiunta del formato: {e}"
 
+# --- NUOVA FUNZIONE DI RICERCA SEMANTICA CON GEMINI ---
+
+@st.cache_data(show_spinner="Ricerca semantica in corso...")
+def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_id_col_name: str) -> list[str]:
+    """
+    Usa Gemini per eseguire una ricerca semantica basata sulla query.
+    Restituisce una lista di nomi di formati pertinenti.
+    """
+    try:
+        if "GEMINI_API_KEY" not in st.secrets:
+            st.warning("Chiave GEMINI_API_KEY non configurata nei secrets. Verrà usata la ricerca testuale.")
+            return [] # Ritorna una lista vuota per fallback
+            
+        # 1. Inizializza il client Gemini
+        client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+
+        # 2. Prepara il contesto dei dati (converti il DataFrame in stringa)
+        catalogue_string = catalogue_df.to_markdown(index=True)
+
+        # 3. Costruisci il prompt
+        prompt = f"""
+        Sei un assistente di ricerca specializzato in format di team building. 
+        Analizza la 'QUERY UTENTE' e restituisci i nomi esatti dei format più rilevanti 
+        all'interno del 'CATALOGO PRODOTTI' fornito. 
+        
+        ISTRUZIONI:
+        1. Considera solo i valori della colonna '{product_id_col_name}' come output.
+        2. L'output deve essere SOLO E SOLTANTO una lista Python di stringhe, ad esempio: ['Format A', 'Format B', 'Format C']. 
+        3. Se non trovi nulla, restituisci una lista vuota: [].
+
+        QUERY UTENTE: "{query}"
+
+        CATALOGO PRODOTTI:
+        {catalogue_string}
+        """
+
+        # 4. Chiama l'API
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.0
+            )
+        )
+        
+        # 5. Processa la risposta (deve essere una lista Python)
+        # Rimuove potenziali blocchi di codice markdown e cerca la lista
+        raw_text = response.text.strip().replace('`', '').replace('python', '').replace('json', '')
+        
+        # Tentativo di eseguire la stringa per ottenere la lista
+        import ast
+        try:
+            result_list = ast.literal_eval(raw_text)
+            if isinstance(result_list, list) and all(isinstance(item, str) for item in result_list):
+                return result_list
+            else:
+                st.error("L'AI non ha restituito una lista di nomi di formati valida. Ritorno vuoto.")
+                return []
+        except:
+            st.error(f"Errore di parsing del risultato AI: {raw_text}. Ritorno vuoto.")
+            return []
+
+    except Exception as e:
+        st.error(f"Errore durante la chiamata a Gemini: {e}")
+        return []
+
+
 # --- Interfaccia Utente Streamlit ---
 
 st.title("🦁 MasterTb 🦁")
-
 
 # Carica i dati
 df = get_all_records()
@@ -115,29 +179,39 @@ with tab_view_edit:
     
     # 1. Campo di testo per la ricerca (AI-based Filtering)
     search_query = st.text_input(
-        f"Cerca per **{product_id_col_name}**:", 
-        placeholder="Digita parte del nome del formato...",
+        f"Cerca il **{product_id_col_name}** con l'AI:", 
+        placeholder="Esempio: 'il format dove si vola' o 'prodotti a basso costo'",
         key="search_format_input"
     )
 
-    # 2. Logica di filtraggio
+    filtered_ids = []
+    
     if search_query:
-        # Filtra gli ID che contengono la query (case-insensitive)
-        filtered_ids = [id for id in product_ids if search_query.lower() in id.lower()]
-    else:
-        # Se la ricerca è vuota, mostra tutti gli ID
+        # Chiamata alla funzione Gemini
+        gemini_results = search_formats_with_gemini(search_query, df, product_id_col_name)
+        
+        if gemini_results:
+            # Filtra solo gli ID che esistono effettivamente nel catalogo (per sicurezza)
+            filtered_ids = [id for id in gemini_results if id in product_ids]
+        else:
+            st.warning("L'AI non ha trovato format pertinenti. Prova con una ricerca testuale classica qui sotto.")
+            # Fallback: se Gemini non trova nulla, usa la ricerca testuale standard
+            filtered_ids = [id for id in product_ids if search_query.lower() in id.lower()]
+            
+    # Se la ricerca è vuota, usiamo l'elenco completo per la selezione iniziale
+    if not search_query:
         filtered_ids = product_ids
         
-    # Se non ci sono risultati, offriamo una selezione vuota
+    # --- Mostra e Seleziona dai risultati ---
     if not filtered_ids:
-        st.warning("Nessun formato trovato con questa ricerca.")
-        # Impostiamo l'ID selezionato su None per evitare errori
+        st.error("Nessun formato trovato.")
         selected_product_id = None
     else:
         # 3. Selectbox con i risultati filtrati
         selected_product_id = st.selectbox(
-            f"Seleziona il **{product_id_col_name}** dai risultati:",
-            options=filtered_ids
+            f"Seleziona il **{product_id_col_name}** (risultati filtrati):",
+            options=filtered_ids,
+            index=0 if filtered_ids else None
         )
 
     # --- Mostra e Modifica i dettagli ---
@@ -240,7 +314,7 @@ with tab_pdf_ppt:
     st.markdown("""
         Per proseguire con l'automazione, dovremo:
         1.  Installare le librerie per la lettura dei documenti (`pypdf`, `python-pptx`).
-        2.  Ottenere la tua chiave **Gemini API Key** e configurarla nei Streamlit Secrets.
+        2.  Usare la chiave **Gemini API Key** già configurata.
         3.  Implementare la logica di estrazione AI in questa sezione.
     """)
     
