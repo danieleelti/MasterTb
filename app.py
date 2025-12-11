@@ -17,7 +17,7 @@ SELECTED_AI_MODEL = 'gemini-3-pro-preview'
 FULL_SYSTEM_PROMPT = """
 Sei un assistente di ricerca specializzato in format di team building. Analizza la richiesta e il catalogo fornito.
 ISTRUZIONI PER L'OUTPUT:
-1. DEVI leggere TUTTE le colonne del 'CATALOGO PRODOTTI' (Descrizione Breve, Tipologia, Vibe / Emozione, ecc.) per trovare corrispondenze semantiche.
+1. DEVI leggere le colonne fornite nel 'CATALOGO PRODOTTI' (Nome Format e Descrizione Breve) per trovare corrispondenze semantiche.
 2. Considera solo i valori della colonna 'Nome Format' come output.
 3. L'output deve essere SOLO E SOLTANTO una lista Python di stringhe, ad esempio: ['Format A', 'Format B', 'Format C']. 
 4. Se non trovi nulla, restituisci una lista vuota: [].
@@ -146,18 +146,36 @@ def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_i
         if "GOOGLE_API_KEY" not in st.secrets:
             return [] 
             
-        # Ritorno alla sintassi universale client.models.generate_content
         client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
-        catalogue_string = catalogue_df.to_markdown(index=True)
+        
+        # --- MODIFICA RICHIESTA: Seleziona SOLO Colonna 1 (Nome Format) e Colonna 16 (Descrizione Breve) ---
+        
+        # Le colonne del DataFrame (indice escluso) sono 0-based.
+        # Colonna 16 = Indice 15 (Descrizione Breve).
+        
+        all_column_names = list(catalogue_df.columns)
+        
+        if len(all_column_names) >= 15: # 15 è l'indice 0-based di Descrizione Breve (Col. 16)
+            col_16_name = all_column_names[15] 
+            
+            # Crea un sotto-DataFrame con l'indice (Nome Format) e la Colonna 16
+            sub_df = catalogue_df[[col_16_name]] 
+            catalogue_string = sub_df.to_markdown(index=True)
+            
+        else:
+            # Fallback di sicurezza se la tabella è troppo piccola
+            catalogue_string = catalogue_df.to_markdown(index=True)
+        
+        # --- FINE MODIFICA RICHIESTA ---
 
-        # Costruisco il prompt completo includendo le istruzioni di sistema direttamente
+        # Costruisco il prompt completo
         full_prompt_text = (
             FULL_SYSTEM_PROMPT + 
             f"\n\nCATALOGO PRODOTTI:\n{catalogue_string}" +
             f"\n\nQUERY UTENTE: {query}"
         )
 
-        # Configurazione Safety Settings (richiede types.GenerateContentConfig)
+        # Configurazione Safety Settings
         config = types.GenerateContentConfig(
             temperature=0.0,
             system_instruction=FULL_SYSTEM_PROMPT,
@@ -242,7 +260,7 @@ with tab_view_edit:
     st.header("Visualizza e Modifica un Formato Esistente")
     
     # --- INFORMAZIONE SUL MODELLO FISSO (NIENTE SELETTORE) ---
-    st.info(f"Modello AI in uso (Fisso): **{SELECTED_AI_MODEL}** (Modalità di chiamata API universale)")
+    st.info(f"Modello AI in uso (Fisso): **{SELECTED_AI_MODEL}** (Contesto di ricerca limitato a {product_id_col_name} + Descrizione Breve)")
     st.markdown("---")
     # --- FINE INFORMAZIONE MODELLO ---
 
