@@ -7,8 +7,7 @@ import ast
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
-# --- CONFIGURAZIONE ---
-# Modello richiesto dall'utente
+# --- CONFIGURAZIONE MODELLO (Torniamo al 3.0 Preview come richiesto) ---
 SELECTED_AI_MODEL = 'gemini-3-pro-preview'
 
 # --- PROMPT DI SISTEMA ---
@@ -107,10 +106,9 @@ def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_i
         if "GOOGLE_API_KEY" not in st.secrets:
             return []
             
-        # Configurazione Globale
         genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
         
-        # Preparazione dati (solo colonne utili)
+        # Preparazione dati: Solo Nome e Descrizione Breve per efficienza
         all_column_names = list(catalogue_df.columns)
         if len(all_column_names) >= 15: 
             col_16_name = all_column_names[15] 
@@ -133,13 +131,11 @@ def search_formats_with_gemini(query: str, catalogue_df: pd.DataFrame, product_i
         )
         # -----------------------------
 
-        # Prompt Combinato
         final_prompt = f"CATALOGO PRODOTTI:\n{catalogue_string}\n\nQUERY UTENTE: {query}"
         
         response = model.generate_content(final_prompt)
         raw_text = response.text.strip()
         
-        # Parsing
         match = re.search(r"(\[.*\])", raw_text, re.DOTALL)
         list_string = match.group(1) if match else raw_text
         
@@ -170,25 +166,28 @@ with tab_view_edit:
     st.header("Visualizza e Modifica")
     st.info(f"Modello AI: **{SELECTED_AI_MODEL}**")
     
-    search_query = st.text_input(f"Cerca {product_id_col_name} con AI:", placeholder="es. format dove si vola")
-    filtered_ids = []
+    # --- FORM DI RICERCA (IL FIX FONDAMENTALE PER IL LOOP) ---
+    # Questo form impedisce a Streamlit di chiamare l'API ad ogni tasto premuto.
+    with st.form("search_form"):
+        search_query_input = st.text_input(f"Cerca {product_id_col_name} con AI:", placeholder="es. format dove si vola")
+        search_submitted = st.form_submit_button("Cerca con Gemini 🦁")
     
-    if search_query:
+    filtered_ids = product_ids # Default: tutti i prodotti
+    
+    # La logica parte SOLO se hai premuto il bottone
+    if search_submitted and search_query_input:
         if "GOOGLE_API_KEY" in st.secrets:
-            gemini_results = search_formats_with_gemini(search_query, df, product_id_col_name)
+            gemini_results = search_formats_with_gemini(search_query_input, df, product_id_col_name)
             if gemini_results:
                 filtered_ids = [id for id in gemini_results if id in product_ids]
-                if not filtered_ids: st.warning("Format trovati ma non corrispondenti al catalogo.")
+                if not filtered_ids: st.warning("Gemini ha trovato risultati, ma i nomi non corrispondono esattamente.")
             else:
-                filtered_ids = [id for id in product_ids if search_query.lower() in id.lower()]
-                if filtered_ids: st.info("Uso ricerca testuale (fallback).")
+                st.warning("Nessuna corrispondenza semantica trovata.")
         else:
-            filtered_ids = [id for id in product_ids if search_query.lower() in id.lower()]
+            st.error("Manca GOOGLE_API_KEY nei secrets.")
 
-    if not search_query: filtered_ids = product_ids
-    
     if not filtered_ids:
-        st.error("Nessun formato trovato.")
+        st.error("Nessun formato da mostrare.")
     else:
         selected_product_id = st.selectbox(f"Seleziona {product_id_col_name}:", options=filtered_ids)
         
@@ -242,4 +241,4 @@ with tab_add_format:
 
 with tab_pdf_ppt:
     st.header("Automazione Documenti")
-    st.info("Pronto per l'integrazione PDF/PPT con librerie installate.")
+    st.info("Pronto per l'integrazione PDF/PPT.")
