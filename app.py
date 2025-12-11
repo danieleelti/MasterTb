@@ -206,22 +206,28 @@ def analyze_document_with_gemini(text_content, columns):
             desc_col_name = c
             break
 
+    # Prompt SPECIFICO per Esperto Team Building
     sys_prompt = f"""
-    Sei un esperto copywriter e data entry. Analizza il testo fornito.
+    Sei un SENIOR TEAM BUILDING EXPERT. Analizza il documento fornito per estrarre informazioni strategiche.
     
     OBIETTIVO: Compilare un JSON con queste chiavi esatte:
     {json.dumps(columns)}
     
     1. Campo Chiave: '{columns[0]}' (NOME FORMAT).
-    2. Campo '{desc_col_name}': Scrivi un paragrafo discorsivo di ALMENO 5-6 RIGHE COMPLETE. Descrivi l'attività in modo coinvolgente.
+    2. Campo '{desc_col_name}': SCRIVI 5-6 RIGHE COMPLETE coinvolgenti e descrittive.
     
-    REGOLE SPECIFICHE:
-    - Campo 'Social' e 'Novità': Solo "SI" o "NO".
-    - Campo 'Ranking': Solo numero intero da 1 a 5.
-    - Campo 'Durata Ideale': Calcola la MEDIA se c'è un range. Scrivi solo il numero.
-    - Se l'informazione MANCA, scrivi "[[RIEMPIMENTO MANUALE]]".
+    REGOLE DI RAGIONAMENTO (THINKING PROCESS):
+    - 'Target Ideale': NON copiare solo il testo. Ragiona: a chi si rivolge? Sales? Management? Tutti? Scrivi una sintesi mirata.
+    - 'Formazione': Analizza se l'attività sviluppa Soft Skills (Leadership, Comunicazione, Problem Solving). Se sì, descrivile brevemente. Se è solo ludico, scrivi "Ludico/Incentive".
+    - 'Sociale': Analizza se l'attività spinge forte sull'interazione e condivisione. Rispondi SOLO "SI" o "NO".
+    - 'Ranking': Valuta la complessità logistica e l'impatto emotivo da 1 a 5 basandoti sulla tua esperienza. Rispondi SOLO col numero.
+    - 'Durata' (Min/Max/Media): Analizza i tempi. Se trovi un range, calcola tu la MEDIA.
+    - 'Max Pax': Se non trovi un limite specifico, scrivi "illimitato".
+    - 'Metodo di Calcolo': Se non specificato diversamente, ipotizza "Standard".
     
-    Rispondi SOLO con il JSON.
+    REGOLE FORMALI:
+    - Se l'informazione MANCA DEL TUTTO, scrivi "[[RIEMPIMENTO MANUALE]]".
+    - Rispondi SOLO con il JSON.
     """
 
     model = genai.GenerativeModel(
@@ -494,12 +500,21 @@ with st.form("master_form"):
         c_lower = c.lower()
         if "[[RIEMPIMENTO MANUALE]]" in val: val = ""
         
-        # Logiche Widget
-        if "social" in c_lower or "novità" in c_lower or "novita" in c_lower:
+        # --- LOGICA CAMPI SPECIFICI (Regole Business) ---
+        
+        # 1. METODO DI CALCOLO
+        if "metodo" in c_lower and "calcolo" in c_lower:
+            options_metodo = ["Standard", "Flat"]
+            idx_metodo = 1 if "flat" in val.lower() else 0
+            form_values[c] = st.selectbox(f"**{c}**", options_metodo, index=idx_metodo)
+
+        # 2. SOCIAL / NOVITÀ (SI/NO)
+        elif "social" in c_lower or "novità" in c_lower or "novita" in c_lower:
             options_bool = ["NO", "SI"]
             idx_bool = 1 if ("si" in val.lower() or "yes" in val.lower()) else 0
             form_values[c] = st.selectbox(f"**{c}**", options_bool, index=idx_bool)
         
+        # 3. RANKING (1-5)
         elif "ranking" in c_lower:
             options_ranking = ["1", "2", "3", "4", "5"]
             try:
@@ -508,12 +523,32 @@ with st.form("master_form"):
             except: curr_rank = "3"
             form_values[c] = st.selectbox(f"**{c}**", options_ranking, index=options_ranking.index(curr_rank))
             
-        elif "link" in c_lower and "website" in c_lower:
-            if not val or is_new_mode:
-                slug = create_slug(new_id)
-                val = f"https://www.teambuilding.it/project/{slug}/"
+        # 4. LINK AUTOMATICI (Solo nuovi format)
+        elif "link" in c_lower:
+            # Calcolo lo slug per il nome
+            slug = create_slug(new_id)
+            
+            # Website
+            if "website" in c_lower:
+                if not val or is_new_mode: val = f"https://teambuilding.it/project/{slug}/"
+            
+            # Schede ITA
+            elif "scheda" in c_lower and "ita" in c_lower:
+                if "pdf" in c_lower and (not val or is_new_mode):
+                    val = f"https://teambuilding.it/preventivi/schede/ita/{slug}.pdf"
+                elif ("ppt" in c_lower or "pptx" in c_lower) and (not val or is_new_mode):
+                    val = f"https://teambuilding.it/preventivi/schede/ita/{slug}.pptx"
+            
+            # Schede ENG
+            elif "scheda" in c_lower and "eng" in c_lower:
+                if "pdf" in c_lower and (not val or is_new_mode):
+                    val = f"https://teambuilding.it/preventivi/schede/eng/{slug}.pdf"
+                elif ("ppt" in c_lower or "pptx" in c_lower) and (not val or is_new_mode):
+                    val = f"https://teambuilding.it/preventivi/schede/eng/{slug}.pptx"
+            
             form_values[c] = st.text_input(f"**{c}**", value=val)
             
+        # 5. DURATA e ALTRI
         elif "durata" in c_lower and "ideale" in c_lower:
              form_values[c] = st.text_input(f"**{c}** (Media in ore)", value=val)
 
