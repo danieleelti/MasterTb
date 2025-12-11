@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components  # Import necessario per il fix JS
 import gspread
 import pandas as pd
 import json
@@ -10,36 +11,54 @@ from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import pypdf
 from pptx import Presentation
 
-# --- CUSTOM CSS PER UPLOAD EVIDENTE (EFFETTO "ACCOGLIENZA") ---
-st.markdown("""
-    <style>
-    /* Stile base del box di upload */
-    [data-testid='stFileUploaderDropzone'] {
-        border: 2px dashed #ccc;
-        border-radius: 10px;
-        background-color: #f8f9fa;
-        transition: all 0.2s ease-in-out;
-    }
-
-    /* EFFETTO QUANDO PASSI SOPRA (DRAG OVER) */
-    [data-testid='stFileUploaderDropzone']:hover {
-        border: 2px dashed #FF4B4B !important; /* Bordo Rosso Streamlit */
-        background-color: #FFECEC !important; /* Sfondo Rossiccio chiaro */
-        transform: scale(1.02); /* Leggero effetto "pop" (zoom) */
-        box-shadow: 0 4px 15px rgba(0,0,0,0.1); /* Ombra per profondità */
-    }
-    
-    /* Cambia colore icona e testo durante l'hover */
-    [data-testid='stFileUploaderDropzone']:hover i,
-    [data-testid='stFileUploaderDropzone']:hover span {
-        color: #FF4B4B !important;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
 # --- CONFIGURAZIONE ---
 SEARCH_MODEL = "models/gemini-2.5-flash-lite"
 DOC_MODEL = "models/gemini-3-pro-preview"
+
+# --- INIEZIONE JAVASCRIPT & CSS PER EFFETTO DRAG & DROP REALE ---
+# Questo script forza il browser a cambiare stile QUANDO stai trascinando il file
+components.html("""
+<script>
+    // Osserva il documento per trovare la dropzone anche se Streamlit la ricarica
+    const observer = new MutationObserver(() => {
+        const dropzone = window.parent.document.querySelector('[data-testid="stFileUploaderDropzone"]');
+        if (dropzone && !dropzone.classList.contains('drag-listener')) {
+            dropzone.classList.add('drag-listener'); // Marca come "ascoltato"
+            
+            // Quando un file entra nella zona
+            dropzone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                dropzone.style.border = '3px dashed #FF4B4B';
+                dropzone.style.backgroundColor = '#FFECEC';
+                dropzone.style.transform = 'scale(1.02)';
+                dropzone.style.transition = 'all 0.2s ease-in-out';
+            });
+
+            // Quando il file esce o viene rilasciato (reset stile)
+            const resetStyle = () => {
+                dropzone.style.border = '1px solid #ccc'; // O lo stile default di Streamlit
+                dropzone.style.backgroundColor = '';
+                dropzone.style.transform = 'scale(1.0)';
+            };
+
+            dropzone.addEventListener('dragleave', resetStyle);
+            dropzone.addEventListener('drop', resetStyle);
+        }
+    });
+    observer.observe(window.parent.document.body, { childList: true, subtree: true });
+</script>
+""", height=0, width=0)
+
+# CSS di base per rendere il box gradevole anche a riposo
+st.markdown("""
+    <style>
+    [data-testid='stFileUploaderDropzone'] {
+        border: 1px dashed #aaa;
+        border-radius: 10px;
+        background-color: #f9f9f9;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 # --- INIZIALIZZAZIONE STATO ---
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
@@ -107,10 +126,12 @@ def read_file_content(uploaded_file):
         if uploaded_file.name.endswith('.pdf'):
             pdf_reader = pypdf.PdfReader(uploaded_file)
             for page in pdf_reader.pages:
-                text += page.extract_text() + "\n"
+                extracted = page.extract_text()
+                if extracted: text += extracted + "\n"
         elif uploaded_file.name.endswith('.pptx') or uploaded_file.name.endswith('.ppt'):
             prs = Presentation(uploaded_file)
             for slide in prs.slides:
+                # Metodo corretto per leggere le forme in PPTX
                 for shape in slide.shapes:
                     if hasattr(shape, "has_text_frame") and shape.has_text_frame:
                         text += shape.text_frame.text + "\n"
@@ -126,16 +147,18 @@ def analyze_document_with_gemini(text_content, columns):
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 
     sys_prompt = f"""
-    Sei un esperto data entry. Estrai dati dal documento per queste colonne:
+    Sei un esperto data entry. Estrai dati dal testo del documento per compilare un database.
+    
+    COLONNE RICHIESTE (Chiavi JSON):
     {json.dumps(columns)}
     
-    Campo chiave: '{columns[0]}' (NOME FORMAT).
+    IMPORTANTE: Il campo '{columns[0]}' è il NOME DEL FORMAT. Cerca il titolo principale.
     
     REGOLE:
-    1. Se il dato manca, scrivi ESATTAMENTE: "[[RIEMPIMENTO MANUALE]]".
-    2. Non inventare.
-    
-    OUTPUT: Solo JSON valido.
+    1. Cerca nel testo i valori corrispondenti alle colonne.
+    2. Se trovi il dato, inseriscilo.
+    3. Se il dato NON c'è, scrivi: "[[RIEMPIMENTO MANUALE]]".
+    4. Rispondi SOLO con un JSON valido piatto (chiave-valore).
     """
 
     model = genai.GenerativeModel(
@@ -145,12 +168,11 @@ def analyze_document_with_gemini(text_content, columns):
     )
 
     try:
-        response = model.generate_content(f"DOCUMENTO:\n{text_content}")
+        response = model.generate_content(f"TESTO DOCUMENTO:\n{text_content}")
+        # Pulizia robusta
         clean_text = response.text.strip()
-        if clean_text.startswith("```json"):
-            clean_text = clean_text[7:]
-        if clean_text.endswith("```"):
-            clean_text = clean_text[:-3]
+        if clean_text.startswith("```json"): clean_text = clean_text[7:]
+        if clean_text.endswith("```"): clean_text = clean_text[:-3]
         
         return json.loads(clean_text.strip())
     except Exception as e:
@@ -324,7 +346,7 @@ with tab2:
         draft = st.session_state.get('draft_data')
         if not isinstance(draft, dict): draft = {}
         
-        id_val = draft.get(id_col, "")
+        id_val = str(draft.get(id_col, ""))
         if id_val == "[[RIEMPIMENTO MANUALE]]":
             st.markdown(f":red[**⚠️ {id_col} MANCANTE**]")
             id_val = ""
@@ -333,13 +355,13 @@ with tab2:
         new_id = st.text_input(f"**{id_col} (UNICO)** *", value=id_val)
         
         for c in cols:
-            val = draft.get(c, "")
-            if "[[RIEMPIMENTO MANUALE]]" in str(val):
+            val = str(draft.get(c, ""))
+            if "[[RIEMPIMENTO MANUALE]]" in val:
                 st.markdown(f":red[**⚠️ {c} MANCANTE**]")
                 val = ""
                 missing_fields.append(c)
             
-            if len(str(val)) > 50:
+            if len(val) > 50:
                 form_values[c] = st.text_area(f"**{c}**", value=val)
             else:
                 form_values[c] = st.text_input(f"**{c}**", value=val)
